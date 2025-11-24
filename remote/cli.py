@@ -1,27 +1,22 @@
 """
-CLI entry point and sync execution logic
+CLI entry point
 """
 import typer
 import tomllib
 from pathlib import Path
 from typing import Optional
 
-from .client import RemoteClient
-from .system import register_machine, update_last_sync, is_first_connect
-from .sync.file import sync_files
-from .sync.block import sync_block_groups
-from .sync.script import run_script
-from .config import (
-    resolve_connection_params,
-    create_client,
-    resolve_home_dirs,
-    parse_file_configs,
-    parse_block_configs,
-    parse_script_configs,
-    parse_global_env,
+from .config import resolve_connection_params
+from .utils import save_ssh_config, load_ssh_config
+from .sync import run_sync_with_config
+from .proxy import ProxyManager, ProxyConfig
+from .exceptions import ProxyError, ConfigError
+from .constants import (
+    DEFAULT_PROXY_LOCAL_PORT,
+    DEFAULT_PROXY_REMOTE_PORT,
+    DEFAULT_PROXY_MODE,
+    DEFAULT_PROXY_LOCAL_HOST,
 )
-from .utils import save_ssh_config, generate_ssh_key_pair, add_authorized_key
-from .exceptions import SyncError
 
 
 # ============================================================
@@ -42,115 +37,183 @@ def main():
     
     Use subcommands to perform different operations:
     - sync: Sync remote server configuration
+    - proxy: Manage SSH reverse proxy tunnels
     """
     pass
 
 
 # ============================================================
-# Sync Execution
+# Proxy Subcommands
 # ============================================================
 
-def run_sync_with_config(
-    cfg: dict,
-    params: dict,
-    config_file_path: Optional[Path] = None
-) -> bool:
+proxy_app = typer.Typer(
+    name="proxy",
+    help="Manage SSH reverse proxy tunnels",
+    add_completion=False,
+)
+
+app.add_typer(proxy_app)
+
+
+@proxy_app.command(name="start")
+def proxy_start(
+    ssh_config: str = typer.Option(
+        ..., "--ssh-config", "-s",
+        help="SSH config host name (from ~/.ssh/config)"
+    ),
+    local_port: int = typer.Option(
+        DEFAULT_PROXY_LOCAL_PORT,
+        "--local-port", "-l",
+        help=f"Local proxy port (default: {DEFAULT_PROXY_LOCAL_PORT})"
+    ),
+    remote_port: int = typer.Option(
+        DEFAULT_PROXY_REMOTE_PORT,
+        "--remote-port", "-r",
+        help=f"Remote mapped port (default: {DEFAULT_PROXY_REMOTE_PORT})"
+    ),
+    mode: str = typer.Option(
+        DEFAULT_PROXY_MODE,
+        "--mode", "-m",
+        help=f"Proxy mode: http or socks5 (default: {DEFAULT_PROXY_MODE})"
+    ),
+    local_host: str = typer.Option(
+        DEFAULT_PROXY_LOCAL_HOST,
+        "--local-host",
+        help=f"Local proxy host (default: {DEFAULT_PROXY_LOCAL_HOST})"
+    ),
+    background: bool = typer.Option(
+        False, "--background", "-b",
+        help="Run in background (not implemented yet)"
+    )
+):
     """
-    Execute sync tasks based on configuration file.
+    Start SSH reverse proxy tunnel
     
-    Process:
-    1. Parse configuration and paths
-    2. Establish SSH connection
-    3. Check system status
-    4. Sync files (auto-create missing directories)
-    5. Sync blocks
-    6. Execute scripts
-    7. Update sync time
-    
-    Args:
-        cfg: TOML configuration dictionary
-        params: Connection parameters dictionary (already resolved)
-        config_file_path: Configuration file path for resolving relative paths
-    
-    Returns:
-        used_key_fallback: True if key authentication was attempted but fell back to password
-    
-    Raises:
-        SyncError: If an error occurs during sync
+    Examples:
+        remote proxy start --ssh-config my-server
+        remote proxy start --ssh-config my-server --local-port 7890 --remote-port 1081
+        remote proxy start -s my-server -l 7890 -r 1081 -m http
     """
-    # Resolve directory configuration
-    block_home, script_home = resolve_home_dirs(cfg, config_file_path)
-    
-    # Step 1: Establish SSH connection
-    client, used_key_fallback = create_client(params)
-    typer.echo(f"[connected] {params['user']}@{params['host']}:{params['port']}")
-    
-    # Step 1.5: Handle add_authorized_key if specified
-    if params.get("add_authorized_key"):
-        # Determine which key to use
-        if params.get("key"):
-            # Use specified key
-            key_path = Path(params["key"]).expanduser()
-            pub_key_path = Path(str(key_path) + ".pub")
-        else:
-            # Use default key
-            default_key = Path.home() / ".ssh" / "id_ed25519_remote"
-            if not default_key.exists():
-                typer.echo(f"[info] Generating SSH key pair: {default_key}")
-                generate_ssh_key_pair(default_key)
-            key_path = default_key
-            pub_key_path = Path(str(default_key) + ".pub")
-        
-        # Add public key to remote authorized_keys
-        add_authorized_key(client, str(pub_key_path))
-    
-    # Step 2: System check (check only, don't register)
-    is_first = is_first_connect(client)
-    
-    # Step 3: Global environment configuration
-    global_env = parse_global_env(cfg)
-    
-    # Use try-except to ensure registration only on complete success
+    # Load SSH config
     try:
-        # Step 4: File sync (sync files first, auto-create missing directories)
-        file_items = parse_file_configs(cfg)
-        if file_items:
-            sync_files(file_items, client)
-        
-        # Step 5: Block sync
-        block_groups = parse_block_configs(cfg, block_home)
-        if block_groups:
-            sync_block_groups(block_groups, client)
-        
-        # Step 6: Script execution
-        scripts = parse_script_configs(cfg, script_home, is_first)
-        for script in scripts:
-            typer.echo(f"[script] Executing: {script.src}")
-            out, err, code = run_script(script, client, global_env)
-            
-            # Display error message if any
-            if err and code != 0:
-                typer.echo(f"[script] Error output:\n{err}", err=True)
-            if code != 0 and not script.allow_fail:
-                # If script fails and failure is not allowed, raise exception
-                raise SyncError(f"Script execution failed: {script.src} (exit code: {code})")
-        
-        # Step 7: All operations successful, register machine and update sync time
-        if is_first:
-            typer.echo("[system] First connection, registering local machine info...")
-            register_machine(client, meta={"client": "remote"})
-        
-        update_last_sync(client)
-        typer.echo("[done] remote sync completed")
-        return used_key_fallback
+        ssh_params = load_ssh_config(ssh_config)
+    except ConfigError as e:
+        raise typer.Exit(str(e))
     
+    # Build connection parameters from SSH config
+    params = {
+        "host": ssh_params["host"],
+        "user": ssh_params.get("user"),
+        "port": ssh_params.get("port", 22),
+        "key": ssh_params.get("key_file"),  # Map key_file to key for create_client
+        "password": None,  # SSH config doesn't store password
+        "timeout": 10,
+    }
+    
+    # Prompt for missing required fields
+    if not params.get("user"):
+        params["user"] = typer.prompt("Enter SSH username", default="root")
+    
+    # Prompt for password if no key is provided
+    if not params.get("key") and not params.get("password"):
+        password_input = typer.prompt(
+            "Enter SSH password (press Enter to skip)",
+            hide_input=True,
+            default=""
+        )
+        params["password"] = password_input if password_input else None
+    
+    # Create proxy configuration
+    try:
+        proxy_cfg = ProxyConfig(
+            local_port=local_port,
+            remote_port=remote_port,
+            mode=mode,
+            local_host=local_host
+        )
+        proxy_cfg.validate()
     except Exception as e:
-        # If any operation fails, don't register machine, re-raise exception
-        if is_first:
-            typer.echo("[warn] Sync failed, not registered as first connection, init operations will be retried next time")
-        if isinstance(e, SyncError):
-            raise
-        raise SyncError(f"Sync failed: {e}") from e
+        raise typer.Exit(f"Invalid proxy configuration: {e}")
+    
+    # Start proxy
+    manager = ProxyManager()
+    try:
+        pid = manager.start(proxy_cfg, params, ssh_config_name=ssh_config, background=background)
+        
+        if not background:
+            # Keep alive in foreground
+            try:
+                manager.keep_alive()
+            except KeyboardInterrupt:
+                pass
+    
+    except ProxyError as e:
+        raise typer.Exit(str(e))
+    except Exception as e:
+        raise typer.Exit(f"Failed to start proxy: {e}")
+
+
+@proxy_app.command(name="stop")
+def proxy_stop():
+    """
+    Stop SSH reverse proxy tunnel
+    
+    Examples:
+        remote proxy stop
+    """
+    manager = ProxyManager()
+    try:
+        manager.stop()
+    except ProxyError as e:
+        raise typer.Exit(str(e))
+    except Exception as e:
+        raise typer.Exit(f"Failed to stop proxy: {e}")
+
+
+@proxy_app.command(name="status")
+def proxy_status():
+    """
+    Show proxy tunnel status
+    
+    Examples:
+        remote proxy status
+    """
+    manager = ProxyManager()
+    status = manager.get_status()
+    
+    if not status:
+        typer.echo("[proxy] Not running")
+        return
+    
+    typer.echo("[proxy] Status: Running")
+    typer.echo(f"[proxy] PID: {status.get('pid', 'N/A')}")
+    
+    # Show SSH config name if available
+    if "ssh_config" in status and status["ssh_config"]:
+        typer.echo(f"[proxy] SSH Config: {status['ssh_config']}")
+    
+    # Show connection info
+    if "connection" in status:
+        conn = status["connection"]
+        typer.echo(f"[proxy] Remote: {conn.get('user')}@{conn.get('host')}:{conn.get('port')}")
+    
+    # Show proxy configuration
+    if "config" in status:
+        cfg = status["config"]
+        typer.echo(f"[proxy] Local: {cfg.get('local_host', 'localhost')}:{cfg.get('local_port')}")
+        typer.echo(f"[proxy] Remote port: {cfg.get('remote_port')}")
+        typer.echo(f"[proxy] Mode: {cfg.get('mode', 'http')}")
+    
+    # Show tunnel info
+    if "tunnel" in status:
+        tunnel = status["tunnel"]
+        typer.echo(f"[proxy] Tunnel: remote localhost:{tunnel.get('remote_port')} -> local {tunnel.get('local_host')}:{tunnel.get('local_port')}")
+    
+    # Show start time
+    if "started_at" in status:
+        import datetime
+        started = datetime.datetime.fromtimestamp(status["started_at"])
+        typer.echo(f"[proxy] Started at: {started.strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 # ============================================================

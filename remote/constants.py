@@ -27,6 +27,15 @@ DEFAULT_BLOCK_HOME = "blocks"
 DEFAULT_SCRIPT_HOME = "scripts"
 
 # ============================================================
+# Proxy Default Values
+# ============================================================
+
+DEFAULT_PROXY_LOCAL_PORT = 7890
+DEFAULT_PROXY_REMOTE_PORT = 1081
+DEFAULT_PROXY_MODE = "http"
+DEFAULT_PROXY_LOCAL_HOST = "localhost"
+
+# ============================================================
 # SSH Config
 # ============================================================
 

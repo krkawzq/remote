@@ -291,3 +291,42 @@ def parse_global_env(cfg: Dict[str, Any]) -> GlobalEnv:
         flags=cfg.get("interpreter_flags", []),
     )
 
+
+# ============================================================
+# Proxy Configuration
+# ============================================================
+
+def parse_proxy_config(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Parse proxy configuration from TOML.
+    
+    Args:
+        cfg: TOML configuration dictionary
+    
+    Returns:
+        Proxy configuration dictionary or None if not configured
+    
+    Raises:
+        ConfigError: If proxy configuration is invalid
+    """
+    if "proxy" not in cfg:
+        return None
+    
+    proxy_cfg = cfg["proxy"]
+    
+    if not isinstance(proxy_cfg, dict):
+        raise ConfigError("proxy configuration must be a dictionary")
+    
+    # Validate required fields
+    if "local_port" not in proxy_cfg:
+        raise ConfigError("proxy.local_port is required")
+    if "remote_port" not in proxy_cfg:
+        raise ConfigError("proxy.remote_port is required")
+    
+    return {
+        "local_port": int(proxy_cfg["local_port"]),
+        "remote_port": int(proxy_cfg["remote_port"]),
+        "mode": proxy_cfg.get("mode", "http"),
+        "local_host": proxy_cfg.get("local_host", "localhost"),
+    }
+

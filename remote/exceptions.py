@@ -37,3 +37,8 @@ class ScriptExecutionError(SyncError):
     """Script execution error"""
     pass
 
+
+class ProxyError(RemoteError):
+    """Proxy error"""
+    pass
+
