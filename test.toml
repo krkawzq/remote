@@ -1,0 +1,40 @@
+# Remote 测试配置文件
+# 连接到本地 Docker 容器 (sshtest)
+
+host = "127.0.0.1"
+user = "root"
+port = 2222
+password = "123456"
+
+# 全局解释器配置（可选）
+interpreter = "/bin/bash"
+interpreter_flags = []
+
+# ========== FILE SYNC ==========
+# 同步 zshrc 配置文件
+[[file]]
+src = "test_files/config/.zshrc"
+dist = ":~/.zshrc"
+mode = "update"
+
+# 同步 Powerlevel10k 配置文件
+[[file]]
+src = "test_files/config/.p10k.zsh"
+dist = ":~/.p10k.zsh"
+mode = "update"
+
+# ========== SCRIPT EXECUTION ==========
+# 安装常用工具（使用 apt）
+[[script]]
+src = "test_files/install_tools.sh"
+mode = "exec"
+interpreter = "/bin/bash"
+allow_fail = false
+
+# 安装 uv 模块
+[[script]]
+src = "test_files/install_uv.sh"
+mode = "exec"
+interpreter = "/bin/bash"
+allow_fail = false
+

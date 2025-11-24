@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remote"
+version = "0.1.0"
+description = "SSH远程连接管理工具"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=46.0.3",
+    "paramiko>=4.0.0",
+    "typer>=0.20.0",
+]
+
+[project.scripts]
+rmt-sync = "remote.cli:run"
