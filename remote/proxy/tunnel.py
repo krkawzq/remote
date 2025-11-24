@@ -1,22 +1,22 @@
 """
 SSH reverse tunnel implementation using paramiko
 
-设计说明：
-==========
-使用 paramiko 实现反向端口转发（Remote Port Forwarding）：
-- 远程服务器访问 localhost:remote_port
-- 通过 SSH 隧道转发到本地 localhost:local_port
+Design Notes:
+=============
+Implements reverse port forwarding (Remote Port Forwarding) using paramiko:
+- Remote server accesses localhost:remote_port
+- Traffic is forwarded through SSH tunnel to local localhost:local_port
 
-Paramiko 实现方式：
-- 使用 Transport.request_port_forward() 在远程建立监听
-- 使用 Transport.accept() 接收来自远程的连接
-- 为每个连接创建线程处理双向数据转发
+Paramiko Implementation:
+- Use Transport.request_port_forward() to establish listener on remote
+- Use Transport.accept() to receive connections from remote
+- Create threads for each connection to handle bidirectional data forwarding
 
-优点：
-- 纯 Python 实现，跨平台兼容
-- 支持密码认证和密钥认证
-- 更好的错误处理和状态管理
-- 不依赖系统 SSH 命令
+Advantages:
+- Pure Python implementation, cross-platform compatible
+- Supports password and key authentication
+- Better error handling and state management
+- No dependency on system SSH commands
 """
 import socket
 import threading
@@ -43,13 +43,13 @@ class ProxyTunnel:
     """
     SSH reverse tunnel using paramiko.
     
-    实现反向端口转发：
-    - 远程 localhost:remote_port -> 本地 localhost:local_port
+    Implements reverse port forwarding:
+    - Remote localhost:remote_port -> Local localhost:local_port
     
-    工作原理：
-    1. 调用 Transport.request_port_forward() 在远程建立监听端口
-    2. 使用 Transport.accept() 接收来自远程的连接
-    3. 为每个连接创建线程处理双向数据转发
+    How it works:
+    1. Call Transport.request_port_forward() to establish listener port on remote
+    2. Use Transport.accept() to receive connections from remote
+    3. Create threads for each connection to handle bidirectional data forwarding
     """
     
     def __init__(
