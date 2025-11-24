@@ -3,19 +3,26 @@ SSH reverse tunnel implementation using paramiko
 
 设计说明：
 ==========
-真正的反向端口转发（Remote Port Forwarding）：
-- 远程机器访问 localhost:remote_port
-- 通过 SSH 通道转发到本地 localhost:local_port
+使用 paramiko 实现反向端口转发（Remote Port Forwarding）：
+- 远程服务器访问 localhost:remote_port
+- 通过 SSH 隧道转发到本地 localhost:local_port
 
 Paramiko 实现方式：
 - 使用 Transport.request_port_forward() 在远程建立监听
 - 使用 Transport.accept() 接收来自远程的连接
-- 为每个连接创建到本地代理的 socket 连接并转发数据
+- 为每个连接创建线程处理双向数据转发
+
+优点：
+- 纯 Python 实现，跨平台兼容
+- 支持密码认证和密钥认证
+- 更好的错误处理和状态管理
+- 不依赖系统 SSH 命令
 """
 import socket
 import threading
+import select
 import time
-from typing import Optional, Callable
+from typing import Optional
 from dataclasses import dataclass
 
 import paramiko
@@ -34,22 +41,21 @@ class TunnelConfig:
 
 class ProxyTunnel:
     """
-    SSH reverse tunnel using paramiko Transport.request_port_forward.
+    SSH reverse tunnel using paramiko.
     
-    实现真正的反向端口转发：
+    实现反向端口转发：
     - 远程 localhost:remote_port -> 本地 localhost:local_port
     
     工作原理：
     1. 调用 Transport.request_port_forward() 在远程建立监听端口
     2. 使用 Transport.accept() 接收来自远程的连接
-    3. 为每个连接创建到本地代理的 socket 并双向转发数据
+    3. 为每个连接创建线程处理双向数据转发
     """
     
     def __init__(
         self,
         client: RemoteClient,
-        config: TunnelConfig,
-        on_error: Optional[Callable[[Exception], None]] = None
+        config: TunnelConfig
     ):
         """
         Initialize tunnel.
@@ -57,30 +63,22 @@ class ProxyTunnel:
         Args:
             client: Connected RemoteClient instance
             config: Tunnel configuration
-            on_error: Error callback function
         """
         self.client = client
         self.config = config
-        self.on_error = on_error
         self._transport: Optional[paramiko.Transport] = None
-        self._acceptor_thread: Optional[threading.Thread] = None
         self._running = False
+        self._acceptor_thread: Optional[threading.Thread] = None
+        self._handler_threads: list[threading.Thread] = []
         self._lock = threading.Lock()
-        self._channels: list = []
     
     def start(self) -> None:
         """
         Start the reverse tunnel.
         
-        Implementation note:
-        Paramiko doesn't directly support reverse port forwarding (-R option).
-        We implement it by:
-        1. Using Transport.request_port_forward() to request the SSH server
-           to forward connections from remote_port to our local handler
-        2. The handler receives connections and forwards them to local proxy
-        
-        Note: This requires SSH server to support reverse port forwarding
-        (GatewayPorts may need to be enabled on server).
+        Raises:
+            RuntimeError: If tunnel is already running
+            ConnectionError: If SSH connection is not available
         """
         with self._lock:
             if self._running:
@@ -94,15 +92,10 @@ class ProxyTunnel:
                 raise ConnectionError("SSH connection is not alive")
             
             # Request reverse port forward on remote server
-            # This tells SSH server: "listen on remote_port and forward to our handler"
-            # The handler will then connect to local proxy and forward data
             try:
-                # request_port_forward with handler function
-                # When remote connects to remote_port, handler is called with the channel
                 self._transport.request_port_forward(
-                    address='',  # Empty string means bind to localhost on remote
-                    port=self.config.remote_port,
-                    handler=self._handle_remote_connection
+                    address='',  # Empty string = bind to localhost on remote
+                    port=self.config.remote_port
                 )
             except Exception as e:
                 raise ConnectionError(
@@ -110,11 +103,12 @@ class ProxyTunnel:
                     "Make sure SSH server supports reverse port forwarding."
                 ) from e
             
-            # Start acceptor thread to handle incoming connections
+            # Start acceptor thread
             self._running = True
             self._acceptor_thread = threading.Thread(
                 target=self._run_acceptor,
-                daemon=True
+                daemon=True,
+                name=f"ProxyTunnel-Acceptor-{self.config.remote_port}"
             )
             self._acceptor_thread.start()
     
@@ -133,76 +127,80 @@ class ProxyTunnel:
                 except Exception:
                     pass
             
-            # Close all active channels
-            for chan in self._channels[:]:
-                try:
-                    chan.close()
-                except Exception:
-                    pass
-            self._channels.clear()
-            
+            # Wait for acceptor thread
             if self._acceptor_thread and self._acceptor_thread.is_alive():
                 self._acceptor_thread.join(timeout=2.0)
+            
+            # Clean up handler threads
+            for thread in self._handler_threads[:]:
+                if thread.is_alive():
+                    thread.join(timeout=0.5)
+            self._handler_threads.clear()
     
     def is_running(self) -> bool:
         """Check if tunnel is running"""
         with self._lock:
-            return self._running
+            return self._running and self._transport and self._transport.is_alive()
     
     def _run_acceptor(self) -> None:
         """
         Main acceptor loop.
         
-        When using request_port_forward with a handler, the handler is called
-        automatically when connections arrive. However, we also need to keep
-        the transport alive and handle connection errors.
+        Continuously accepts incoming connections from remote
+        and spawns handler threads for each connection.
         """
         try:
             while self._running:
                 if not self._transport or not self._transport.is_alive():
                     raise ConnectionError("SSH connection lost")
                 
-                # Keep connection alive
-                # The handler function will be called automatically by paramiko
-                # when connections arrive from remote
-                time.sleep(1.0)
+                # Accept incoming connection (with timeout)
+                chan = self._transport.accept(timeout=1.0)
+                if chan is None:
+                    continue
+                
+                # Spawn handler thread for this connection
+                handler_thread = threading.Thread(
+                    target=self._handle_connection,
+                    args=(chan,),
+                    daemon=True,
+                    name=f"ProxyTunnel-Handler-{id(chan)}"
+                )
+                handler_thread.start()
+                
+                # Track handler thread
+                with self._lock:
+                    self._handler_threads.append(handler_thread)
+                    # Clean up finished threads
+                    self._handler_threads = [t for t in self._handler_threads if t.is_alive()]
         
         except Exception as e:
-            if self.on_error:
-                self.on_error(e)
-            else:
-                raise
+            if self._running:  # Only log if not intentionally stopped
+                print(f"[proxy] Acceptor error: {e}")
     
-    def _handle_remote_connection(
-        self,
-        chan: paramiko.Channel,
-        origin: tuple = None,
-        destination: tuple = None
-    ) -> None:
+    def _handle_connection(self, chan: paramiko.Channel) -> None:
         """
-        Handle a connection from remote.
+        Handle a single connection from remote.
         
-        Creates a connection to local proxy server and forwards data bidirectionally.
+        Creates a connection to local proxy and forwards data bidirectionally.
         
         Args:
-            chan: SSH channel representing connection from remote
+            chan: SSH channel from remote
         """
         local_sock = None
         try:
-            with self._lock:
-                self._channels.append(chan)
-            
-            # Connect to local proxy server
+            # Connect to local proxy
             local_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             local_sock.settimeout(10)
             local_sock.connect((self.config.local_host, self.config.local_port))
+            local_sock.settimeout(None)  # Set to blocking mode
             
             # Forward data bidirectionally
             self._forward_data(chan, local_sock)
         
         except Exception as e:
-            if self.on_error:
-                self.on_error(e)
+            # Connection errors are expected when connections close
+            pass
         finally:
             if local_sock:
                 try:
@@ -213,51 +211,61 @@ class ProxyTunnel:
                 chan.close()
             except Exception:
                 pass
-            with self._lock:
-                if chan in self._channels:
-                    self._channels.remove(chan)
     
     def _forward_data(self, chan: paramiko.Channel, sock: socket.socket) -> None:
         """
         Forward data bidirectionally between SSH channel and socket.
         
-        Uses non-blocking I/O with select for efficient data transfer.
+        Uses select() for efficient multiplexing of both directions.
         
         Args:
             chan: SSH channel (from remote)
             sock: Local socket (to local proxy)
         """
-        import select
-        
         try:
             while self._running:
-                if chan.closed or sock.fileno() == -1:
+                # Check if either side is closed
+                if chan.closed:
                     break
                 
-                # Forward data from remote (channel) to local (socket)
+                # Use select to wait for data on either side
+                # We only select on socket for reading; channel is checked via recv_ready()
+                read_ready = []
                 if chan.recv_ready():
-                    data = chan.recv(4096)
-                    if not data:
-                        break
+                    read_ready.append('chan')
+                
+                # Check socket with select (non-blocking check)
+                r, w, x = select.select([sock], [], [], 0.01)
+                if r:
+                    read_ready.append('sock')
+                
+                # No data available, continue
+                if not read_ready:
+                    continue
+                
+                # Forward data from channel to socket
+                if 'chan' in read_ready:
                     try:
+                        data = chan.recv(8192)
+                        if len(data) == 0:
+                            break
                         sock.sendall(data)
                     except (socket.error, OSError):
                         break
-                
-                # Forward data from local (socket) to remote (channel)
-                if select.select([sock], [], [], 0.1)[0]:
-                    data = sock.recv(4096)
-                    if not data:
-                        break
-                    try:
-                        chan.sendall(data)
                     except paramiko.SSHException:
                         break
                 
-                # Small sleep to avoid CPU spinning
-                time.sleep(0.01)
+                # Forward data from socket to channel
+                if 'sock' in read_ready:
+                    try:
+                        data = sock.recv(8192)
+                        if len(data) == 0:
+                            break
+                        chan.sendall(data)
+                    except (socket.error, OSError):
+                        break
+                    except paramiko.SSHException:
+                        break
         
-        except Exception as e:
-            if self.on_error:
-                self.on_error(e)
-
+        except Exception:
+            pass
