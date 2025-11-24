@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "remote"
 version = "0.1.0"
-description = "SSH远程连接管理工具"
+description = "SSH remote connection management tool"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

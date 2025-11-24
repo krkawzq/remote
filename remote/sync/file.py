@@ -23,7 +23,7 @@ class FileSync:
 # ============================================================
 
 def remote_exists(client: RemoteClient, path: str) -> bool:
-    """检查远程文件是否存在"""
+    """Check if remote file exists"""
     try:
         sftp = client.open_sftp()
         sftp.stat(path)
@@ -33,7 +33,7 @@ def remote_exists(client: RemoteClient, path: str) -> bool:
 
 
 def remote_mtime(client: RemoteClient, path: str) -> Optional[float]:
-    """获取远程文件的修改时间"""
+    """Get modification time of remote file"""
     try:
         sftp = client.open_sftp()
         return sftp.stat(path).st_mtime
@@ -45,15 +45,52 @@ def remote_mtime(client: RemoteClient, path: str) -> Optional[float]:
 # Copy helpers
 # ============================================================
 
+def ensure_remote_dir(client: RemoteClient, remote_path: str) -> None:
+    """
+    Ensure remote directory exists, create if it doesn't (similar to mkdir -p).
+    
+    Args:
+        client: RemoteClient instance
+        remote_path: Remote file path
+    """
+    import os
+    sftp = client.open_sftp()
+    
+    # Get parent directory
+    dir_path = os.path.dirname(remote_path)
+    if not dir_path or dir_path == "/":
+        return  # Root directory or no parent directory
+    
+    # Recursively create directories
+    parts = dir_path.split("/")
+    current_path = ""
+    for part in parts:
+        if not part:
+            continue
+        current_path = current_path + "/" + part if current_path else "/" + part
+        try:
+            sftp.stat(current_path)
+        except IOError:
+            # Directory doesn't exist, create it
+            try:
+                sftp.mkdir(current_path)
+            except IOError:
+                # May have been created by another process, ignore error
+                pass
+
+
 def put_file(client: RemoteClient, local: Path, remote: str) -> None:
-    """上传本地文件到远程"""
+    """Upload local file to remote, auto-create directory if it doesn't exist"""
+    # Ensure remote directory exists
+    ensure_remote_dir(client, remote)
+    
     sftp = client.open_sftp()
     sftp.put(local.as_posix(), remote)
     log_info(f"[push] {local} → {remote}")
 
 
 def get_file(client: RemoteClient, remote: str, local: Path) -> None:
-    """从远程下载文件到本地"""
+    """Download file from remote to local"""
     sftp = client.open_sftp()
     local.parent.mkdir(parents=True, exist_ok=True)
     sftp.get(remote, local.as_posix())
@@ -65,13 +102,13 @@ def get_file(client: RemoteClient, remote: str, local: Path) -> None:
 # ============================================================
 
 def sync_files(files: list[FileSync], client: RemoteClient) -> None:
-    """同步多个文件"""
+    """Sync multiple files"""
     for f in files:
         _sync_one_file(f, client)
 
 
 def _sync_one_file(f: FileSync, client: RemoteClient) -> None:
-    """同步单个文件"""
+    """Sync a single file"""
     src_is_remote = is_remote_path(f.src)
     dist_is_remote = is_remote_path(f.dist)
 

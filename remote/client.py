@@ -13,16 +13,17 @@ class ClientConfig:
     auth_method: Literal["password", "key"] = "password"
     password: Optional[str] = None
     key_path: Optional[str] = None
+    timeout: int = 10  # SSH connection timeout (seconds)
 
 
 class RemoteClient:
     """
-    专业封装 Paramiko SSHClient：
-    - 显式保存 host / user / port（paramiko 4.x 不再保存）
-    - 支持 password 和 key 登录
-    - 自动加载 RSA / Ed25519 私钥
-    - 提供 exec / sftp 辅助方法
-    - 支持 with 上下文管理
+    Professional wrapper for Paramiko SSHClient:
+    - Explicitly save host / user / port (paramiko 4.x no longer saves them)
+    - Support password and key authentication
+    - Auto-load RSA / Ed25519 private keys
+    - Provide exec / sftp helper methods
+    - Support with context management
     """
     def __init__(
         self,
@@ -32,9 +33,10 @@ class RemoteClient:
         auth_method: Literal["password", "key"] = "password",
         password: Optional[str] = None,
         key_path: Optional[str] = None,
+        timeout: int = 10,
     ) -> None:
         """
-        直接接受参数初始化，而不是 ClientConfig 对象
+        Accept parameters directly for initialization, not a ClientConfig object
         """
         self.config = ClientConfig(
             host=host,
@@ -43,23 +45,24 @@ class RemoteClient:
             auth_method=auth_method,
             password=password,
             key_path=key_path,
+            timeout=timeout,
         )
 
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
-        # SFTP 连接缓存
+        # SFTP connection cache
         self._sftp: Optional[paramiko.SFTPClient] = None
 
     # --------------------
     # Connection management
     # --------------------
     def connect(self) -> None:
-        """公开的连接方法"""
+        """Public connection method"""
         self._connect()
 
     def _connect(self) -> None:
-        """内部连接实现"""
+        """Internal connection implementation"""
         cfg = self.config
 
         if cfg.auth_method == "password":
@@ -68,6 +71,7 @@ class RemoteClient:
                 port=cfg.port,
                 username=cfg.user,
                 password=cfg.password,
+                timeout=cfg.timeout,
             )
 
         elif cfg.auth_method == "key":
@@ -77,6 +81,7 @@ class RemoteClient:
                 port=cfg.port,
                 username=cfg.user,
                 pkey=key,
+                timeout=cfg.timeout,
             )
 
         else:
@@ -86,7 +91,7 @@ class RemoteClient:
     # Load private key
     # --------------------
     def _load_private_key(self, path: str) -> paramiko.PKey:
-        """自动探测 RSA 和 Ed25519"""
+        """Auto-detect RSA and Ed25519"""
         p = Path(path).expanduser()
 
         try:
@@ -101,14 +106,14 @@ class RemoteClient:
     # Helpers
     # --------------------
     def exec(self, cmd: str) -> Tuple[str, str]:
-        """执行命令并返回 (stdout, stderr)"""
+        """Execute command and return (stdout, stderr)"""
         stdin, stdout, stderr = self.client.exec_command(cmd)
         out = stdout.read().decode()
         err = stderr.read().decode()
         return out, err
 
     def exec_with_code(self, cmd: str) -> Tuple[str, str, int]:
-        """执行命令并返回 (stdout, stderr, exit_code)"""
+        """Execute command and return (stdout, stderr, exit_code)"""
         stdin, stdout, stderr = self.client.exec_command(cmd)
         out = stdout.read().decode()
         err = stderr.read().decode()
@@ -119,12 +124,12 @@ class RemoteClient:
         self, cmd: str, stdout_callback=None, stderr_callback=None
     ) -> Tuple[str, str, int]:
         """
-        执行命令并实时输出，返回 (stdout, stderr, exit_code)
+        Execute command with real-time output, return (stdout, stderr, exit_code)
         
         Args:
-            cmd: 要执行的命令
-            stdout_callback: stdout 输出回调函数，接收 (data: str) -> None
-            stderr_callback: stderr 输出回调函数，接收 (data: str) -> None
+            cmd: Command to execute
+            stdout_callback: stdout output callback function, receives (data: str) -> None
+            stderr_callback: stderr output callback function, receives (data: str) -> None
         
         Returns:
             (stdout, stderr, exit_code)
@@ -137,11 +142,11 @@ class RemoteClient:
         out_buf = []
         err_buf = []
         
-        # 轮询方式读取输出，实时显示
+        # Polling method to read output in real-time
         while not stdout.channel.exit_status_ready():
             has_output = False
             
-            # 读取 stdout
+            # Read stdout
             if stdout.channel.recv_ready():
                 data = stdout.channel.recv(4096).decode('utf-8', errors='replace')
                 if data:
@@ -153,7 +158,7 @@ class RemoteClient:
                         sys.stdout.write(data)
                         sys.stdout.flush()
             
-            # 读取 stderr
+            # Read stderr
             if stderr.channel.recv_stderr_ready():
                 data = stderr.channel.recv_stderr(4096).decode('utf-8', errors='replace')
                 if data:
@@ -165,11 +170,11 @@ class RemoteClient:
                         sys.stderr.write(data)
                         sys.stderr.flush()
             
-            # 如果没有输出，短暂休眠避免 CPU 空转
+            # If no output, sleep briefly to avoid CPU spinning
             if not has_output:
                 time.sleep(0.01)
         
-        # 读取剩余数据
+        # Read remaining data
         while stdout.channel.recv_ready():
             data = stdout.channel.recv(4096).decode('utf-8', errors='replace')
             if data:
@@ -194,9 +199,19 @@ class RemoteClient:
         return ''.join(out_buf), ''.join(err_buf), exit_code
 
     def open_sftp(self) -> paramiko.SFTPClient:
-        """返回 SFTP 客户端，复用已有连接"""
-        if self._sftp is None or self._sftp.get_channel() is None:
+        """Return SFTP client, reuse existing connection"""
+        # Check if connection is valid
+        if self._sftp is None:
             self._sftp = self.client.open_sftp()
+        else:
+            try:
+                # Check if channel is still valid
+                channel = self._sftp.get_channel()
+                if channel is None or channel.closed:
+                    self._sftp = self.client.open_sftp()
+            except Exception:
+                # If check fails, recreate connection
+                self._sftp = self.client.open_sftp()
         return self._sftp
 
     # --------------------

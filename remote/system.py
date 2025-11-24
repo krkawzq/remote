@@ -8,6 +8,7 @@ from typing import Dict, Any
 
 from .client import RemoteClient
 from .utils import resolve_remote_path
+from .constants import REMOTE_STATE_PATH, LOCAL_MACHINE_ID_PATH
 
 
 # ============================================================
@@ -18,7 +19,7 @@ def _read_local_machine_id() -> str:
     """
     获取本地机器码：
     - 优先读取系统 machine-id
-    - 如果失败，则使用 ~/.rmt/machine-id 持久化生成
+    - 如果失败，则使用 ~/.remote/machine-id 持久化生成
     """
 
     # 1. Linux/macOS
@@ -38,8 +39,8 @@ def _read_local_machine_id() -> str:
         except (subprocess.CalledProcessError, FileNotFoundError):
             pass
 
-    # 3. fallback → ~/.rmt/machine-id
-    store = Path("~/.rmt/machine-id").expanduser()
+    # 3. fallback → ~/.remote/machine-id
+    store = Path(LOCAL_MACHINE_ID_PATH).expanduser()
     if store.exists():
         return store.read_text().strip()
 
@@ -58,8 +59,6 @@ def get_local_machine_id() -> str:
 # ============================================================
 # Remote State Management
 # ============================================================
-
-REMOTE_STATE_PATH = ":~/.rmt_state.json"
 
 
 def load_remote_state(client: RemoteClient) -> Dict[str, Any]:

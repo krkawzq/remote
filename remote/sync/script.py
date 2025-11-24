@@ -1,5 +1,4 @@
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional, Tuple
@@ -9,122 +8,288 @@ from ..utils import is_remote_path, resolve_remote_path, log_info
 
 
 # ============================================================
+# Constants
+# ============================================================
+
+INTERACTIVE_TIMEOUT = 60  # Interactive command timeout (seconds)
+
+
+# ============================================================
 # Data Models
 # ============================================================
 
 @dataclass
 class GlobalEnv:
-    """全局解释器环境"""
-    interpreter: str = "/bin/bash"     # 默认解释器
-    flags: list[str] = None            # 解释器 flags，例如 ["-i"]
+    """Global interpreter environment configuration"""
+    interpreter: str = "/bin/bash"
+    flags: Optional[list[str]] = None
 
 
 @dataclass
 class ScriptExec:
-    """单个脚本执行单元"""
-    src: str                                     # 本地脚本 or 远程脚本 (":path")
-    mode: Literal["exec", "source"] = "exec"     # 运行模式
-
-    interpreter: Optional[str] = None            # 解释器覆盖
-    flags: Optional[list[str]] = None            # 解释器 flags 覆盖
-    args: Optional[list[str]] = None             # 脚本参数
-
-    interactive: bool = False                    # 是否需要交互模式
-    allow_fail: bool = False                     # 非零退出允许
+    """
+    Single script execution unit
+    
+    Attributes:
+        src: Local script path or remote script path (":path" format)
+        mode: Execution timing - "init" (first connection only) or "always" (every time)
+        exec_mode: Execution method - "exec" (direct execution) or "source" (source mode)
+        interpreter: Interpreter path (optional, ignored in source mode)
+        flags: Interpreter flags (optional)
+        args: Script arguments (optional)
+        interactive: Whether interactive mode is required
+        allow_fail: Whether non-zero exit codes are allowed
+    """
+    src: str
+    mode: Literal["init", "always"] = "always"
+    exec_mode: Literal["exec", "source"] = "exec"
+    
+    interpreter: Optional[str] = None
+    flags: Optional[list[str]] = None
+    args: Optional[list[str]] = None
+    
+    interactive: bool = False
+    allow_fail: bool = False
 
 
 # ============================================================
-# Helpers
+# Helper Functions
 # ============================================================
 
 def detect_shebang(path: Path) -> Optional[str]:
-    """根据本地文件读取 shebang"""
+    """
+    Read shebang line from local file.
+    
+    Returns:
+        Interpreter path from shebang, or None if not found
+    """
     try:
-        first = path.read_text().split("\n")[0].strip()
-        if first.startswith("#!"):
-            return first[2:].strip()
-    except (OSError, IOError, IndexError) as e:
-        return None
+        first_line = path.read_text().split("\n")[0].strip()
+        if first_line.startswith("#!"):
+            return first_line[2:].strip()
+    except (OSError, IOError, IndexError):
+        pass
     return None
 
 
-def upload_script(client: RemoteClient, local: Path) -> str:
-    """上传本地脚本到远程 /tmp，返回远程路径"""
-    remote_path = f"/tmp/rmt-{uuid.uuid4().hex}.sh"
-
+def upload_script(client: RemoteClient, local_path: Path) -> str:
+    """
+    Upload local script to remote /tmp directory.
+    
+    Args:
+        client: RemoteClient instance
+        local_path: Local script path
+    
+    Returns:
+        Remote script path
+    """
+    remote_path = f"/tmp/{local_path.name}"
+    
     sftp = client.open_sftp()
     with sftp.open(remote_path, "w") as f:
-        f.write(local.read_text())
+        f.write(local_path.read_text())
     sftp.chmod(remote_path, 0o755)
-
+    
     return remote_path
 
 
-def delete_remote(client: RemoteClient, path: str) -> None:
-    """删除远程临时文件"""
+def delete_remote_file(client: RemoteClient, path: str) -> None:
+    """
+    Delete remote temporary file (ignore errors).
+    
+    Args:
+        client: RemoteClient instance
+        path: Remote file path
+    """
     try:
         sftp = client.open_sftp()
         sftp.remove(path)
     except (IOError, OSError):
-        # 文件不存在或无权限删除，忽略
+        # File doesn't exist or no permission to delete, ignore
         pass
 
 
 # ============================================================
-# Exec Helpers
+# Command Execution
 # ============================================================
 
 def exec_non_interactive(
     client: RemoteClient, cmd: str, allow_fail: bool
 ) -> Tuple[str, str, int]:
-    """非交互式执行命令，实时显示输出"""
-    # 使用流式输出方法，实时显示 stdout 和 stderr
+    """
+    Execute command non-interactively with real-time output.
+    
+    Args:
+        client: RemoteClient instance
+        cmd: Command to execute
+        allow_fail: Whether non-zero exit codes are allowed
+    
+    Returns:
+        (stdout, stderr, exit_code)
+    
+    Raises:
+        RuntimeError: If command fails and allow_fail=False
+    """
     out, err, code = client.exec_with_code_streaming(cmd)
+    
     if code != 0 and not allow_fail:
         raise RuntimeError(
             f"[script failed]\ncmd: {cmd}\ncode: {code}\nstderr:\n{err}"
         )
+    
     return out, err, code
 
 
 def exec_interactive(client: RemoteClient, cmd: str) -> Tuple[str, str, int]:
     """
-    使用 invoke_shell 交互式执行命令
+    Execute command interactively (simplified implementation).
     
-    注意：这是一个简化实现，不支持真正的用户交互
+    Note: This is a simplified implementation and does not support true user interaction.
+    
+    Args:
+        client: RemoteClient instance
+        cmd: Command to execute
+    
+    Returns:
+        (stdout, stderr, exit_code)
+    
+    Raises:
+        TimeoutError: If command execution times out
     """
     chan = client.client.invoke_shell()
     chan.send(cmd + "\n")
-    chan.send("exit\n")  # 执行完后退出
-
+    chan.send("exit\n")
+    
     buf = []
-    timeout = 60  # 60秒超时
     start_time = time.time()
     
-    while True:
-        if chan.recv_ready():
-            data = chan.recv(4096).decode()
-            buf.append(data)
-        
-        if chan.exit_status_ready():
-            # 读取剩余数据
-            while chan.recv_ready():
+    try:
+        while True:
+            if chan.recv_ready():
                 data = chan.recv(4096).decode()
                 buf.append(data)
-            break
+            
+            if chan.exit_status_ready():
+                # Read remaining data
+                while chan.recv_ready():
+                    data = chan.recv(4096).decode()
+                    buf.append(data)
+                break
+            
+            # Timeout check
+            if time.time() - start_time > INTERACTIVE_TIMEOUT:
+                chan.close()
+                raise TimeoutError(
+                    f"Command execution timeout after {INTERACTIVE_TIMEOUT}s"
+                )
+            
+            time.sleep(0.1)
         
-        # 超时检查
-        if time.time() - start_time > timeout:
-            chan.close()
-            raise TimeoutError(f"Command execution timeout after {timeout}s")
-        
-        # 避免 CPU 空转
-        time.sleep(0.1)
-
-    exit_code = chan.recv_exit_status()
-    output = "".join(buf)
+        exit_code = chan.recv_exit_status()
+        output = "".join(buf)
+        return output, "", exit_code
     
-    return output, "", exit_code
+    finally:
+        if not chan.closed:
+            chan.close()
+
+
+# ============================================================
+# Script Preparation
+# ============================================================
+
+class ScriptContext:
+    """Script execution context"""
+    def __init__(
+        self,
+        remote_path: str,
+        local_path: Optional[Path],
+        need_cleanup: bool
+    ):
+        self.remote_path = remote_path
+        self.local_path = local_path
+        self.need_cleanup = need_cleanup
+
+
+def prepare_script(
+    script: ScriptExec, client: RemoteClient
+) -> ScriptContext:
+    """
+    Prepare script execution environment.
+    
+    Returns:
+        ScriptContext object
+    """
+    if is_remote_path(script.src):
+        # Remote script: use directly
+        remote_path = resolve_remote_path(client, script.src)
+        return ScriptContext(remote_path, None, False)
+    else:
+        # Local script: upload to remote
+        local_path = Path(script.src).expanduser()
+        if not local_path.exists():
+            raise FileNotFoundError(f"Script not found: {script.src}")
+        
+        remote_path = upload_script(client, local_path)
+        return ScriptContext(remote_path, local_path, True)
+
+
+def resolve_interpreter(
+    script: ScriptExec,
+    global_env: GlobalEnv,
+    local_path: Optional[Path]
+) -> Tuple[str, list[str]]:
+    """
+    Resolve interpreter and flags used by script.
+    
+    Returns:
+        (interpreter_path, flags_list)
+    """
+    if script.exec_mode == "source":
+        # source mode: use global interpreter
+        return global_env.interpreter, global_env.flags or []
+    else:
+        # exec mode: resolve interpreter
+        interpreter = (
+            script.interpreter or
+            (detect_shebang(local_path) if local_path else None) or
+            global_env.interpreter
+        )
+        flags = (
+            script.flags
+            if script.flags is not None
+            else (global_env.flags or [])
+        )
+        return interpreter, flags
+
+
+def build_command(
+    script: ScriptExec,
+    interpreter: str,
+    flags: list[str],
+    remote_path: str,
+    args: list[str]
+) -> str:
+    """
+    Build command to execute.
+    
+    Args:
+        script: ScriptExec object
+        interpreter: Interpreter path
+        flags: Interpreter flags
+        remote_path: Remote script path
+        args: Script arguments
+    
+    Returns:
+        Complete command string
+    """
+    flag_str = " ".join(flags)
+    arg_str = " ".join(args)
+    
+    if script.exec_mode == "source":
+        return f'{interpreter} {flag_str} -c "source {remote_path} {arg_str}"'
+    else:
+        return f"{interpreter} {flag_str} {remote_path} {arg_str}"
 
 
 # ============================================================
@@ -132,79 +297,46 @@ def exec_interactive(client: RemoteClient, cmd: str) -> Tuple[str, str, int]:
 # ============================================================
 
 def run_script(
-    script: ScriptExec, client: RemoteClient, global_env: GlobalEnv
+    script: ScriptExec,
+    client: RemoteClient,
+    global_env: GlobalEnv
 ) -> Tuple[str, str, int]:
     """
-    执行一个 ScriptExec，支持本地 src 和远程 src，
-    支持 exec/source/interpreter/flags/args/interactive，
-    执行结束自动清理临时文件。
+    Execute script.
+    
+    Process:
+    1. Prepare script (upload local script or resolve remote script)
+    2. Resolve interpreter and flags
+    3. Build command
+    4. Execute command
+    5. Clean up temporary files
     
     Returns:
         (stdout, stderr, exit_code)
     """
-
-    # ------------------------------------------------------------
-    # Step 1: 准备 remote_script_path
-    # ------------------------------------------------------------
-    src_is_remote = is_remote_path(script.src)
-
-    if src_is_remote:
-        remote_script = resolve_remote_path(client, script.src)
-        local_path = None
-        need_cleanup = False
-
-    else:
-        local_path = Path(script.src).expanduser()
-        if not local_path.exists():
-            raise FileNotFoundError(f"Script not found: {script.src}")
-        remote_script = upload_script(client, local_path)
-        need_cleanup = True
-
-    # ------------------------------------------------------------
-    # Step 2: 解释器解析（优先级）
-    # ------------------------------------------------------------
-    interpreter = (
-        script.interpreter or
-        (detect_shebang(local_path) if local_path else None) or
-        global_env.interpreter
-    )
-
-    flags = script.flags if script.flags is not None else (global_env.flags or [])
-    args = script.args or []
-
-    flag_str = " ".join(flags)
-    arg_str = " ".join(args)
-
-    # ------------------------------------------------------------
-    # Step 3: 构建命令
-    # ------------------------------------------------------------
-    if script.mode == "source":
-        # 使用全局解释器环境执行 source
-        g_flag_str = " ".join(global_env.flags or [])
-        cmd = f'{global_env.interpreter} {g_flag_str} -c "source {remote_script} {arg_str}"'
-
-    elif script.mode == "exec":
-        cmd = f"{interpreter} {flag_str} {remote_script} {arg_str}"
-
-    else:
-        raise RuntimeError(f"Unknown script mode: {script.mode}")
-
-    log_info(f"[run] {cmd}")
-
-    # ------------------------------------------------------------
-    # Step 4: 执行命令
-    # ------------------------------------------------------------
+    # Step 1: Prepare script
+    ctx = prepare_script(script, client)
+    
     try:
+        # Step 2: Resolve interpreter
+        interpreter, flags = resolve_interpreter(
+            script, global_env, ctx.local_path
+        )
+        
+        # Step 3: Build command
+        args = script.args or []
+        cmd = build_command(script, interpreter, flags, ctx.remote_path, args)
+        log_info(f"[run] {cmd}")
+        
+        # Step 4: Execute command
         if script.interactive:
             out, err, code = exec_interactive(client, cmd)
         else:
             out, err, code = exec_non_interactive(client, cmd, script.allow_fail)
-
+        
+        return out, err, code
+    
     finally:
-        # ------------------------------------------------------------
-        # Step 5: 清理 tmp 文件
-        # ------------------------------------------------------------
-        if need_cleanup:
-            delete_remote(client, remote_script)
-
-    return out, err, code
+        # Step 5: Clean up temporary files
+        if ctx.need_cleanup:
+            delete_remote_file(client, ctx.remote_path)

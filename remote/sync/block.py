@@ -3,10 +3,22 @@ import time
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Tuple, List
+from typing import Literal, Tuple, List, Dict, Optional
 
 from ..client import RemoteClient
 from ..utils import resolve_remote_path, log_info, log_warn
+from ..constants import GLOBAL_START_MARKER, GLOBAL_END_MARKER
+
+
+# Regular expression pattern for block markers
+BLOCK_PATTERN = re.compile(
+    r"(?ms)^# >>> remote-block:(?P<name>[^\n]+?) "
+    r"src=(?P<src>.+?) "
+    r"mtime=(?P<mtime>\d+) "
+    r"hash=(?P<hash>[0-9a-f]+) <<<$"
+    r"\n(?P<body>.*?)"
+    r"^# <<< remote-block:(?P=name) <<<\s*$"
+)
 
 
 # ============================================================
@@ -16,28 +28,33 @@ from ..utils import resolve_remote_path, log_info, log_warn
 @dataclass
 class TextBlock:
     """
-    单个 block，对应多个 src 文件（模块）。
-    每个 block 有自己的更新模式：
-    - init
-    - update
-    - cover
+    Single block, corresponding to multiple src files (modules).
+    Each block has its own update mode:
+    - init: Write only on first initialization
+    - update: Intelligently update based on mtime and hash
+    - cover: Force overwrite
     """
-    name: str
     src: list[str]
     mode: Literal["init", "update", "cover"]
+    
+    def get_name(self) -> str:
+        """Generate block identifier from src file path (using absolute path of first file)"""
+        if not self.src:
+            raise ValueError("TextBlock must have at least one src file")
+        return str(Path(self.src[0]).expanduser().resolve())
 
 
 @dataclass
 class BlockGroup:
     """
-    一个 dist 文件包含若干 block，属于同一个 group。
-    group_mode:
-    - incremental：保留 unknown blocks
-    - overwrite：完全重建 rmt 区域（删除 unknown blocks）
+    A dist file contains multiple blocks, belonging to the same group.
+    mode:
+    - incremental: Preserve unknown blocks (blocks not in configuration)
+    - overwrite: Completely rebuild remote region (delete unknown blocks)
     """
     dist: str
+    mode: Literal["incremental", "overwrite"]
     blocks: list[TextBlock]
-    group_mode: Literal["incremental", "overwrite"]
 
 
 # ============================================================
@@ -45,13 +62,13 @@ class BlockGroup:
 # ============================================================
 
 def _calc_hash(text: str) -> str:
-    """计算文本的 SHA256 哈希值（前16位）"""
+    """Calculate SHA256 hash of text (first 16 characters)"""
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _read_local_blocks(blk: TextBlock) -> Tuple[str, float]:
+def _read_local_block(blk: TextBlock) -> Tuple[str, float]:
     """
-    读取所有 src 文件，合并 body，返回合并内容和最大 mtime。
+    Read all src files of block, merge content, return merged content and maximum mtime.
     
     Returns:
         (merged_content, latest_mtime)
@@ -59,8 +76,11 @@ def _read_local_blocks(blk: TextBlock) -> Tuple[str, float]:
     bodies = []
     latest_mtime = 0.0
 
-    for p in blk.src:
-        path = Path(p).expanduser()
+    for src_path in blk.src:
+        path = Path(src_path).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"Block source file not found: {src_path}")
+        
         body = path.read_text()
         bodies.append(body.rstrip() + "\n")
         latest_mtime = max(latest_mtime, path.stat().st_mtime)
@@ -69,109 +89,109 @@ def _read_local_blocks(blk: TextBlock) -> Tuple[str, float]:
     return merged, latest_mtime
 
 
-# ============================================================
-# Main Sync Logic
-# ============================================================
-
-def sync_block_groups(groups: list[BlockGroup], client: RemoteClient) -> None:
+def _parse_remote_blocks(remote_text: str) -> Dict[str, re.Match]:
     """
-    同步多个 BlockGroup
+    Parse existing blocks in remote file.
+    
+    Returns:
+        Dictionary: {block_name: match_object}
     """
-    for group in groups:
-        _sync_one_group(group, client)
+    return {m.group("name"): m for m in BLOCK_PATTERN.finditer(remote_text)}
 
 
-def _sync_one_group(group: BlockGroup, client: RemoteClient) -> None:
+def _read_remote_file(client: RemoteClient, remote_path: str) -> str:
     """
-    一个 dist 文件对应一个 group
-    group_mode:
-      - incremental：保留 unknown blocks
-      - overwrite：删除 unknown blocks
+    Read remote file content, return empty string if file doesn't exist.
+    
+    Returns:
+        File content (ensured to end with newline)
     """
-    remote_path = resolve_remote_path(client, group.dist)
     sftp = client.open_sftp()
-
-    # ============================================================
-    # STEP 1: read remote file
-    # ============================================================
     try:
         with sftp.open(remote_path, "r") as f:
-            remote_text = f.read().decode()
+            content = f.read().decode()
     except IOError:
-        remote_text = ""
+        content = ""
+    
+    if not content.endswith("\n"):
+        content += "\n"
+    
+    return content
 
-    if not remote_text.endswith("\n"):
-        remote_text += "\n"
 
-    # ============================================================
-    # STEP 2: detect global wrapper
-    # ============================================================
-    G_START = "# >>> rmt:global-start <<<"
-    G_END   = "# <<< rmt:global-end <<<"
+def _has_global_wrapper(text: str) -> bool:
+    """Check if text contains global wrapper"""
+    return GLOBAL_START_MARKER in text
 
-    has_global = G_START in remote_text
 
-    # ============================================================
-    # STEP 3: parse existing blocks
-    # ============================================================
-    block_pattern = re.compile(
-        r"(?ms)^# >>> rmt-block:(?P<name>[\w\-]+) "
-        r"src=(?P<src>.+?) "
-        r"mtime=(?P<mtime>\d+) "
-        r"hash=(?P<hash>[0-9a-f]+) <<<$"
-        r"\n(?P<body>.*?)"
-        r"^# <<< rmt-block:(?P=name) <<<\s*$"
+def _strip_global_region(text: str) -> str:
+    """Remove global wrapper region, preserve other content"""
+    if not _has_global_wrapper(text):
+        return text
+    
+    wrapper_pattern = re.compile(
+        rf"(?ms){re.escape(GLOBAL_START_MARKER)}.*?{re.escape(GLOBAL_END_MARKER)}"
     )
+    return wrapper_pattern.sub("", text).rstrip() + "\n"
 
-    existing_blocks = {m.group("name"): m for m in block_pattern.finditer(remote_text)}
 
-    # ============================================================
-    # STEP 4: block-level sync logic
-    # ============================================================
-    new_blocks = []
-    warnings = []
+# ============================================================
+# Block Sync Logic
+# ============================================================
 
-    for blk in group.blocks:
-        new_body, new_mtime = _read_local_blocks(blk)
-        new_hash = _calc_hash(new_body)
+class BlockSyncResult:
+    """Block sync result"""
+    def __init__(self):
+        self.blocks_to_write: List[Tuple[str, List[str], float, str, str]] = []
+        self.warnings: List[str] = []
+    
+    def add_block(self, name: str, src_list: List[str], mtime: float, 
+                  hash_val: str, body: str):
+        """Add block to write"""
+        self.blocks_to_write.append((name, src_list, mtime, hash_val, body))
+    
+    def add_warning(self, warning: str):
+        """Add warning message"""
+        self.warnings.append(warning)
+    
+    def has_warnings(self) -> bool:
+        """Check if there are warnings"""
+        return len(self.warnings) > 0
 
-        # BLOCK EXISTS?
-        existed = blk.name in existing_blocks
 
-        # parse remote block if exists
+def _should_update_block(
+    blk: TextBlock,
+    block_name: str,
+    existed: bool,
+    old_hash: Optional[str],
+    old_mtime: Optional[float],
+    new_hash: str,
+    new_mtime: float,
+    has_global: bool
+) -> Tuple[bool, Optional[str]]:
+    """
+    Determine if block should be updated.
+    
+    Returns:
+        (should_update, warning_message)
+    """
+    # init mode: write only on first initialization
+    if blk.mode == "init":
+        if has_global:
+            return False, None
+        return True, None
+    
+    # update mode: intelligent update
+    if blk.mode == "update":
         if existed:
-            m = existing_blocks[blk.name]
-            old_hash = m.group("hash")
-            old_mtime = float(m.group("mtime"))
-        else:
-            old_hash = None
-            old_mtime = None
-
-        # --------------------------------------------------------
-        # block-mode: init
-        # --------------------------------------------------------
-        if blk.mode == "init":
-            if has_global:
-                # 已存在 global，不写入
-                continue
-            # 第一次写入（global 新建时添加）
-            new_blocks.append((blk.name, blk.src, new_mtime, new_hash, new_body))
-            continue
-
-        # --------------------------------------------------------
-        # block-mode: update
-        # --------------------------------------------------------
-        if blk.mode == "update":
-            if existed:
-                # mtime 不新 → 无需更新
-                if new_mtime <= old_mtime:
-                    continue
-
-                # hash 冲突 → 拒绝
-                if new_hash != old_hash:
-                    warnings.append(
-f"""
-[WARN] Block '{blk.name}' was manually modified on the remote. Update is rejected!
+            # mtime not newer → no update needed
+            if new_mtime <= old_mtime:
+                return False, None
+            
+            # hash conflict → reject update
+            if new_hash != old_hash:
+                warning = f"""
+[WARN] Block '{block_name}' was manually modified on the remote. Update is rejected!
 Local hash:  {new_hash}
 Remote hash: {old_hash}
 Local mtime:  {time.ctime(new_mtime)}
@@ -179,74 +199,168 @@ Remote mtime: {time.ctime(old_mtime)}
 
 If you want to overwrite, please set block.mode to 'cover' and try again.
 """
-                    )
-                    continue
-            # 否则需要添加或更新
-            new_blocks.append((blk.name, blk.src, new_mtime, new_hash, new_body))
-            continue
+                return False, warning
+        # Need to add or update
+        return True, None
+    
+    # cover mode: force overwrite
+    if blk.mode == "cover":
+        return True, None
+    
+    raise ValueError(f"Unknown block mode: {blk.mode}")
 
-        # --------------------------------------------------------
-        # block-mode: cover
-        # --------------------------------------------------------
-        if blk.mode == "cover":
-            new_blocks.append((blk.name, blk.src, new_mtime, new_hash, new_body))
-            continue
 
-    # ============================================================
-    # FAIL IF WARNINGS
-    # ============================================================
-    if warnings:
-        sftp.close()
-        for warning in warnings:
-            log_warn(warning)
-        raise RuntimeError("[ERROR] sync aborted due to remote modifications.")
-
-    # ============================================================
-    # STEP 5: build new global-block region
-    # ============================================================
-    # strip old region
-    if has_global:
-        wrapper_pattern = re.compile(
-            rf"(?ms){re.escape(G_START)}.*?{re.escape(G_END)}"
+def _process_blocks(
+    group: BlockGroup,
+    existing_blocks: Dict[str, re.Match],
+    has_global: bool
+) -> BlockSyncResult:
+    """
+    Process all blocks, determine which need to be updated.
+    
+    Returns:
+        BlockSyncResult object
+    """
+    result = BlockSyncResult()
+    
+    for blk in group.blocks:
+        # Read local block content
+        new_body, new_mtime = _read_local_block(blk)
+        new_hash = _calc_hash(new_body)
+        block_name = blk.get_name()
+        
+        # Check if exists
+        existed = block_name in existing_blocks
+        old_hash = None
+        old_mtime = None
+        
+        if existed:
+            m = existing_blocks[block_name]
+            old_hash = m.group("hash")
+            old_mtime = float(m.group("mtime"))
+        
+        # Determine if should update
+        should_update, warning = _should_update_block(
+            blk, block_name, existed, old_hash, old_mtime,
+            new_hash, new_mtime, has_global
         )
-        untouched = wrapper_pattern.sub("", remote_text).rstrip() + "\n"
-    else:
-        untouched = remote_text
+        
+        if warning:
+            result.add_warning(warning)
+        
+        if should_update:
+            result.add_block(block_name, blk.src, new_mtime, new_hash, new_body)
+    
+    return result
 
-    # build wrapper
-    wrapper_lines = [G_START]
 
-    # group_mode: incremental → 保留 unknown blocks
-    if group.group_mode == "incremental" and has_global:
+def _build_block_marker(name: str, src_list: List[str], mtime: float, 
+                        hash_val: str) -> str:
+    """Build block marker line"""
+    src_str = ",".join(src_list)
+    return f"# >>> remote-block:{name} src={src_str} mtime={int(mtime)} hash={hash_val} <<<"
+
+
+def _build_global_region(
+    group: BlockGroup,
+    existing_blocks: Dict[str, re.Match],
+    new_blocks: List[Tuple[str, List[str], float, str, str]],
+    has_global: bool
+) -> List[str]:
+    """
+    Build content of global wrapper region.
+    
+    Returns:
+        List of lines
+    """
+    lines = [GLOBAL_START_MARKER]
+    
+    # Preserve existing blocks not in current configuration (incremental mode)
+    if group.mode == "incremental" and has_global:
+        current_block_names = {blk.get_name() for blk in group.blocks}
         for name, m in existing_blocks.items():
-            if name not in [blk.name for blk in group.blocks]:
+            if name not in current_block_names:
                 src = m.group("src")
                 mtime = m.group("mtime")
                 hsh = m.group("hash")
                 body = m.group("body")
-                wrapper_lines.append(
-                    f"# >>> rmt-block:{name} src={src} mtime={mtime} hash={hsh} <<<"
-                )
-                wrapper_lines.append(body)
-                wrapper_lines.append(f"# <<< rmt-block:{name} <<<")
-
-    # new or updated blocks
+                lines.append(_build_block_marker(name, [src], float(mtime), hsh))
+                lines.append(body)
+                lines.append(f"# <<< remote-block:{name} <<<")
+    
+    # Add new or updated blocks
     for name, src_list, mtime, hsh, body in new_blocks:
-        src_str = ",".join(src_list)
-        wrapper_lines.append(
-            f"# >>> rmt-block:{name} src={src_str} mtime={int(mtime)} hash={hsh} <<<"
-        )
-        wrapper_lines.append(body)
-        wrapper_lines.append(f"# <<< rmt-block:{name} <<<")
+        lines.append(_build_block_marker(name, src_list, mtime, hsh))
+        lines.append(body)
+        lines.append(f"# <<< remote-block:{name} <<<")
+    
+    lines.append(GLOBAL_END_MARKER)
+    return lines
 
-    wrapper_lines.append(G_END)
-    final_text = untouched + "\n".join(wrapper_lines) + "\n"
 
-    # ============================================================
-    # STEP 6: write back
-    # ============================================================
+def _write_remote_file(client: RemoteClient, remote_path: str, content: str):
+    """Write content to remote file"""
+    # Ensure remote directory exists
+    from .file import ensure_remote_dir
+    ensure_remote_dir(client, remote_path)
+    
+    sftp = client.open_sftp()
     with sftp.open(remote_path, "w") as f:
-        f.write(final_text)
+        f.write(content)
 
-    sftp.close()
+
+def _sync_one_group(group: BlockGroup, client: RemoteClient) -> None:
+    """
+    Sync a BlockGroup to remote file.
+    
+    Process:
+    1. Read remote file
+    2. Parse existing blocks
+    3. Process all blocks, determine which need to be updated
+    4. Build new global region
+    5. Write back to remote file
+    """
+    remote_path = resolve_remote_path(client, group.dist)
+    
+    # Step 1: Read remote file
+    remote_text = _read_remote_file(client, remote_path)
+    has_global = _has_global_wrapper(remote_text)
+    
+    # Step 2: Parse existing blocks
+    existing_blocks = _parse_remote_blocks(remote_text)
+    
+    # Step 3: Process blocks
+    result = _process_blocks(group, existing_blocks, has_global)
+    
+    # If there are warnings, raise exception
+    if result.has_warnings():
+        for warning in result.warnings:
+            log_warn(warning)
+        raise RuntimeError("[ERROR] sync aborted due to remote modifications.")
+    
+    # Step 4: Build new content
+    untouched = _strip_global_region(remote_text)
+    global_lines = _build_global_region(
+        group, existing_blocks, result.blocks_to_write, has_global
+    )
+    final_text = untouched + "\n".join(global_lines) + "\n"
+    
+    # Step 5: Write back to remote file
+    _write_remote_file(client, remote_path, final_text)
     log_info(f"[block] Updated {remote_path}")
+
+
+# ============================================================
+# Public API
+# ============================================================
+
+def sync_block_groups(groups: List[BlockGroup], client: RemoteClient) -> None:
+    """
+    Sync multiple BlockGroups to remote server.
+    
+    Args:
+        groups: List of BlockGroup
+        client: RemoteClient instance
+    """
+    for group in groups:
+        _sync_one_group(group, client)
