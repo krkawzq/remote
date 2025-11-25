@@ -8,21 +8,21 @@ from typing import Optional
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TransferSpeedColumn
 
-from ...core.logging import get_logger, get_stdout_console, get_stderr_console
-from ...core.exceptions import TransferError, ConnectionError
-from ...core.constants import DEFAULT_SSH_PORT
-from ...domain.transfer import TransferService, TransferConfig
-from ...infrastructure.state.transfer_store import TransferManifestStore
-from .connection import RemoteConnectionFactory
+from ....core.logging import get_logger, get_stdout_console, get_stderr_console
+from ....core.exceptions import TransferError, ConnectionError
+from ....core.constants import DEFAULT_SSH_PORT
+from ....domain.transfer import TransferService, TransferConfig
+from ....infrastructure.state.transfer_store import TransferManifestStore
+from ..connection import RemoteConnectionFactory
 
 logger = get_logger(__name__)
 stdout_console = get_stdout_console()
 stderr_console = get_stderr_console()
 
 
-def register_transfer_command(app: typer.Typer) -> None:
-    """Register transfer command on the main app"""
-    app.command(name="transfer")(transfer_run)
+def register_transfer_command(transfer_app: typer.Typer) -> None:
+    """Register transfer command to transfer app"""
+    transfer_app.command(name="transfer")(transfer_run)
 
 
 def transfer_run(

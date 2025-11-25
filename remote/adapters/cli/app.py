@@ -10,7 +10,8 @@ from rich.console import Console
 from ...core.logging import setup_logging, get_logger, get_stdout_console
 from .proxy import register_proxy_app
 from .sync import register_sync_command
-from .transfer import register_transfer_command
+from .transfer.main import register_transfer_command
+from .connect import register_connect_command
 
 logger = get_logger(__name__)
 console = get_stdout_console()
@@ -28,6 +29,7 @@ app = typer.Typer(
 register_proxy_app(app)
 register_sync_command(app)
 register_transfer_command(app)
+register_connect_command(app)
 
 
 @app.callback()
