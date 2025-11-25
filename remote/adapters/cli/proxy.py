@@ -31,20 +31,20 @@ stderr_console = get_stderr_console()
 prompt_provider = RichPromptProvider()
 
 
-def create_proxy_app() -> typer.Typer:
-    """Create proxy subcommand app"""
-    app = typer.Typer(
+def register_proxy_app(app: typer.Typer) -> None:
+    """Register proxy subcommand app"""
+    proxy_app = typer.Typer(
         name="proxy",
         help="Manage SSH reverse proxy tunnels",
         add_completion=False,
     )
     
-    app.command(name="start")(proxy_start)
-    app.command(name="stop")(proxy_stop)
-    app.command(name="status")(proxy_status)
-    app.command(name="list")(proxy_list)
+    proxy_app.command(name="start")(proxy_start)
+    proxy_app.command(name="stop")(proxy_stop)
+    proxy_app.command(name="status")(proxy_status)
+    proxy_app.command(name="list")(proxy_list)
     
-    return app
+    app.add_typer(proxy_app, name="proxy")
 
 
 def proxy_start(

@@ -42,3 +42,8 @@ class ProxyError(RemoteError):
     """Proxy error"""
     pass
 
+
+class TransferError(RemoteError):
+    """Transfer error"""
+    pass
+

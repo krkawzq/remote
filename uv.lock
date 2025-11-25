@@ -342,11 +342,12 @@ wheels = [
 
 [[package]]
 name = "remote"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "paramiko" },
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -354,6 +355,7 @@ dependencies = [
 requires-dist = [
     { name = "cryptography", specifier = ">=46.0.3" },
     { name = "paramiko", specifier = ">=4.0.0" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "typer", specifier = ">=0.20.0" },
 ]
 

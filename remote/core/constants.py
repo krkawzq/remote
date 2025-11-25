@@ -46,6 +46,8 @@ SSH_CONFIG_MODE = 0o600
 # State Storage
 # ============================================================
 
-DEFAULT_STATE_DIR = "~/.remote/proxy"
+DEFAULT_STATE_DIR = "~/.remote/state"
+DEFAULT_PROXY_STATE_DIR = "~/.remote/proxy"
+DEFAULT_TRANSFER_STATE_DIR = "~/.remote/state/transfer"
 DEFAULT_LOG_DIR = "~/.remote/logs"
 

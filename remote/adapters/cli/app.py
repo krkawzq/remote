@@ -8,8 +8,9 @@ from typing import Optional
 from rich.console import Console
 
 from ...core.logging import setup_logging, get_logger, get_stdout_console
-from .proxy import create_proxy_app
+from .proxy import register_proxy_app
 from .sync import register_sync_command
+from .transfer import register_transfer_command
 
 logger = get_logger(__name__)
 console = get_stdout_console()
@@ -23,12 +24,10 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 
-# Create sub-apps
-proxy_app = create_proxy_app()
-app.add_typer(proxy_app, name="proxy")
-
-# Register sync command directly (not as subcommand)
+# Register sub-apps and commands
+register_proxy_app(app)
 register_sync_command(app)
+register_transfer_command(app)
 
 
 @app.callback()
@@ -51,6 +50,7 @@ def main(
     Use subcommands to perform different operations:
     - proxy: Manage SSH reverse proxy tunnels
     - sync: Sync remote server configuration
+    - transfer: Transfer files with resume support and parallel downloads
     """
     # Setup logging
     setup_logging(level=log_level, log_file=log_file)
