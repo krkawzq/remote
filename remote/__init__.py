@@ -9,7 +9,7 @@ Provides high-level CLI tool abstractions to assist users with remote servers, s
 - SSH reverse proxy tunnels
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Export core components
 from .core import (
