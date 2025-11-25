@@ -314,9 +314,9 @@ class ConnectShell:
             Exit code (-1 for exit signal)
         """
         # Check if builtin command
-        if parsed.name in BUILTIN_COMMANDS:
-            handler = BUILTIN_COMMANDS[parsed.name]
-            exit_code = handler(parsed.args, self.session)
+        if parsed.name in self.builtin_commands:
+            handler = self.builtin_commands[parsed.name]
+            exit_code = handler(parsed.args)
             
             # Track cd commands for context update
             if parsed.name == 'cd' and exit_code == 0:

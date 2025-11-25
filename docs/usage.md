@@ -1,38 +1,16 @@
-# Remote 工具使用指南
+# Remote 使用手册
 
-## 快速开始
+本手册聚焦 **进阶使用与架构说明**，避免与仓库根目录的 `README.md` 和 `docs/QUICKSTART.md` 重复。
 
-### 安装
+- 安装与基础命令示例：请查看项目根目录的 `README.md`
+- 场景化上手（同步配置、共享代理、批量初始化）：请查看 `docs/QUICKSTART.md`
+- 完整文档索引：请查看 `docs/README.md`
 
-```bash
-# 使用 uv（推荐）
-uv pip install -e .
-
-# 或使用 pip
-pip install -e .
-```
-
-### 基本使用
-
-#### Proxy 命令
-
-启动代理：
-```bash
-remote proxy start my-server
-remote proxy start my-server --local-port 7890 --remote-port 1081
-```
-
-查看状态：
-```bash
-remote proxy status
-remote proxy status my-server
-```
-
-停止代理：
-```bash
-remote proxy stop my-server
-remote proxy stop  # 停止所有实例
-```
+下面内容主要涵盖：
+- Proxy 的高级用法与配置系统
+- 新架构特性与分层设计
+- 从旧版本迁移的注意事项
+- 故障排查与高级用法
 
 ## 新架构特性
 
