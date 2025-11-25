@@ -138,7 +138,8 @@ def _should_update_block(
     old_mtime: Optional[float],
     new_hash: str,
     new_mtime: float,
-    has_global: bool
+    has_global: bool,
+    force_init: bool = False
 ) -> Tuple[bool, Optional[str]]:
     """
     Determine if block should be updated.
@@ -146,8 +147,11 @@ def _should_update_block(
     Returns:
         (should_update, warning_message)
     """
-    # init mode: write only on first initialization
+    # init mode: write only on first initialization (unless force_init)
     if blk.mode == "init":
+        if force_init:
+            # Force init mode: always update
+            return True, None
         if has_global:
             return False, None
         return True, None
@@ -184,7 +188,8 @@ If you want to overwrite, please set block.mode to 'cover' and try again.
 def _process_blocks(
     group: BlockGroup,
     existing_blocks: Dict[str, re.Match],
-    has_global: bool
+    has_global: bool,
+    force_init: bool = False
 ) -> BlockSyncResult:
     """
     Process all blocks, determine which need to be updated.
@@ -213,7 +218,7 @@ def _process_blocks(
         # Determine if should update
         should_update, warning = _should_update_block(
             blk, block_name, existed, old_hash, old_mtime,
-            new_hash, new_mtime, has_global
+            new_hash, new_mtime, has_global, force_init=force_init
         )
         
         if warning:
@@ -279,13 +284,14 @@ def _write_remote_file(client: RemoteClient, remote_path: str, content: str):
         f.write(content)
 
 
-def sync_block_groups(groups: List[BlockGroup], client: RemoteClient) -> None:
+def sync_block_groups(groups: List[BlockGroup], client: RemoteClient, force_init: bool = False) -> None:
     """
     Sync multiple BlockGroups to remote server.
     
     Args:
         groups: List of BlockGroup
         client: RemoteClient instance
+        force_init: Force init mode (treat as first connection)
     
     Raises:
         RuntimeError: If sync fails due to remote modifications
@@ -303,7 +309,7 @@ def sync_block_groups(groups: List[BlockGroup], client: RemoteClient) -> None:
         existing_blocks = _parse_remote_blocks(remote_text)
         
         # Step 3: Process blocks
-        result = _process_blocks(group, existing_blocks, has_global)
+        result = _process_blocks(group, existing_blocks, has_global, force_init=force_init)
         
         # If there are warnings, raise exception
         if result.has_warnings():

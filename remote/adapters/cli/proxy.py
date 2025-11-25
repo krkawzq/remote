@@ -49,25 +49,30 @@ def create_proxy_app() -> typer.Typer:
 
 def proxy_start(
     name: str = typer.Argument(..., help="Proxy instance name (SSH config host name)"),
-    local_port: int = typer.Option(
-        DEFAULT_PROXY_LOCAL_PORT,
+    local_port: Optional[int] = typer.Option(
+        None,
         "--local-port", "-l",
-        help=f"Local proxy port (default: {DEFAULT_PROXY_LOCAL_PORT})"
+        help=f"Local proxy port (default: {DEFAULT_PROXY_LOCAL_PORT} or auto if --builtin)"
     ),
     remote_port: int = typer.Option(
         DEFAULT_PROXY_REMOTE_PORT,
         "--remote-port", "-r",
-        help=f"Remote mapped port (default: {DEFAULT_PROXY_REMOTE_PORT})"
+        help=f"Remote proxy port (default: {DEFAULT_PROXY_REMOTE_PORT})"
     ),
     mode: str = typer.Option(
-        DEFAULT_PROXY_MODE,
+        "socks5",
         "--mode", "-m",
-        help=f"Proxy mode: http or socks5 (default: {DEFAULT_PROXY_MODE})"
+        help=f"Proxy mode: http or socks5 (default: socks5)"
     ),
     local_host: str = typer.Option(
         DEFAULT_PROXY_LOCAL_HOST,
         "--local-host",
         help=f"Local proxy host (default: {DEFAULT_PROXY_LOCAL_HOST})"
+    ),
+    builtin: bool = typer.Option(
+        False,
+        "--builtin", "-b",
+        help="Use built-in proxy server (no need for local Clash/proxy service)"
     ),
     foreground: bool = typer.Option(
         False, "--foreground", "-f",
@@ -80,13 +85,28 @@ def proxy_start(
     ),
 ):
     """
-    Start SSH reverse proxy tunnel (runs in background by default)
+    Start SSH proxy tunnel (runs in background by default)
+    
+    Two modes:
+    1. Built-in proxy mode (--builtin): Starts a local proxy server and forwards remote requests to it
+       - No need for local Clash/proxy service
+       - Local built-in proxy server listens on local_port (default: 7890)
+       - Remote server can access proxy at localhost:remote_port (default: 1081)
+       - Remote requests are forwarded to local proxy server through SSH reverse tunnel
+    
+    2. Reverse tunnel mode (default): Forwards remote proxy port to local proxy service
+       - Requires local proxy service (like Clash) running on local_port
+       - Remote connections come to local proxy through SSH tunnel
     
     Examples:
-        remote proxy start my-server
+        # Built-in proxy mode: remote server accesses local built-in proxy
+        remote proxy start my-server --builtin
+        remote proxy start my-server -b --local-port 7890 --remote-port 1081
+        # On remote server: export http_proxy=http://localhost:1081
+        
+        # Reverse tunnel mode: forward remote proxy to local Clash
         remote proxy start my-server --local-port 7890 --remote-port 1081
         remote proxy start my-server -l 7890 -r 1081 -m http
-        remote proxy start my-server --foreground
     """
     try:
         # Load configuration
@@ -97,6 +117,7 @@ def proxy_start(
                 "remote_port": remote_port,
                 "mode": mode,
                 "local_host": local_host,
+                "use_builtin": builtin,
             }
         }
         
@@ -136,12 +157,21 @@ def proxy_start(
             )
             params["password"] = password_input if password_input else None
         
+        # Determine if using built-in mode
+        use_builtin = cfg.get("proxy", {}).get("use_builtin", builtin)
+        
+        # Auto-assign local_port if using built-in mode and not specified
+        final_local_port = cfg.get("proxy", {}).get("local_port", local_port)
+        if use_builtin and final_local_port is None:
+            final_local_port = DEFAULT_PROXY_LOCAL_PORT
+        
         # Create proxy configuration
         proxy_config = ProxyConfig(
-            local_port=cfg.get("proxy", {}).get("local_port", local_port),
             remote_port=cfg.get("proxy", {}).get("remote_port", remote_port),
+            local_port=final_local_port,
             mode=cfg.get("proxy", {}).get("mode", mode),
             local_host=cfg.get("proxy", {}).get("local_host", local_host),
+            use_builtin=use_builtin,
         )
         proxy_config.validate()
         
@@ -152,10 +182,19 @@ def proxy_start(
         
         # Start proxy
         def on_started(pid: int):
-            stdout_console.print(f"[green]✓[/green] Started proxy '{name}' in {'foreground' if foreground else 'background'}")
+            mode_str = "Built-in proxy" if proxy_config.use_builtin else "Reverse tunnel"
+            stdout_console.print(f"[green]✓[/green] Started {mode_str} '{name}' in {'foreground' if foreground else 'background'}")
             stdout_console.print(f"  SSH host: [cyan]{name}[/cyan]")
             stdout_console.print(f"  PID: [yellow]{pid}[/yellow]")
-            stdout_console.print(f"  Remote port: [cyan]{proxy_config.remote_port}[/cyan] -> Local: [cyan]{proxy_config.local_host}:{proxy_config.local_port}[/cyan]")
+            
+            if proxy_config.use_builtin:
+                stdout_console.print(f"  Local built-in proxy: [cyan]{proxy_config.local_host}:{proxy_config.local_port}[/cyan] ({proxy_config.mode.upper()})")
+                stdout_console.print(f"  Remote access: [cyan]localhost:{proxy_config.remote_port}[/cyan] (on remote server)")
+                stdout_console.print(f"  [yellow]On remote server, use:[/yellow] export http_proxy=http://localhost:{proxy_config.remote_port}")
+            else:
+                stdout_console.print(f"  Remote port: [cyan]{proxy_config.remote_port}[/cyan] -> Local: [cyan]{proxy_config.local_host}:{proxy_config.local_port}[/cyan]")
+                stdout_console.print(f"  [yellow]Make sure local proxy is running on port {proxy_config.local_port}[/yellow]")
+            
             if not foreground:
                 stdout_console.print(f"  Use [cyan]remote proxy status {name}[/cyan] to check status")
         

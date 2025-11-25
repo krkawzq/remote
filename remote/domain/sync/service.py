@@ -68,6 +68,7 @@ class SyncService:
         scripts: List[ScriptExec],
         global_env: GlobalEnv,
         add_authorized_key_flag: bool = False,
+        force_init: bool = False,
     ) -> bool:
         """
         Execute sync tasks.
@@ -88,6 +89,7 @@ class SyncService:
             scripts: List of scripts to execute
             global_env: Global environment configuration
             add_authorized_key_flag: Whether to add authorized key
+            force_init: Force init mode (treat as first connection)
         
         Returns:
             used_key_fallback: True if key auth was attempted but fell back to password
@@ -149,7 +151,12 @@ class SyncService:
                     self.on_key_added(f"{home}/.ssh/authorized_keys")
             
             # Step 2: System check (check only, don't register)
-            is_first = is_first_connect(self._client)
+            # Force init mode if requested, otherwise check actual status
+            if force_init:
+                is_first = True
+                logger.info("Force init mode enabled, treating as first connection")
+            else:
+                is_first = is_first_connect(self._client)
             
             # Step 3: Filter scripts based on first connection
             scripts_to_run = []
@@ -164,11 +171,11 @@ class SyncService:
             try:
                 # Step 4: File sync
                 if file_items:
-                    sync_files(file_items, self._client)
+                    sync_files(file_items, self._client, force_init=force_init)
                 
                 # Step 5: Block sync
                 if block_groups:
-                    sync_block_groups(block_groups, self._client)
+                    sync_block_groups(block_groups, self._client, force_init=force_init)
                 
                 # Step 6: Script execution
                 for script in scripts_to_run:

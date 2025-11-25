@@ -39,6 +39,9 @@ def sync_run(
     ssh_config: Optional[str] = typer.Option(
         None, "--ssh-config", help="Save SSH configuration to ~/.ssh/config with specified Host name"
     ),
+    force_init: bool = typer.Option(
+        False, "--force-init", help="Force init mode (treat as first connection, execute init scripts and sync init files)"
+    ),
 ):
     """
     Sync remote server configuration
@@ -46,6 +49,7 @@ def sync_run(
     Examples: 
         remote sync config.toml
         remote sync config.toml --ssh-config machine-name
+        remote sync config.toml --force-init  # Force init mode (execute init scripts/files)
     """
     try:
         # Load configuration
@@ -97,7 +101,7 @@ def sync_run(
             ),
         )
         
-        # Parse scripts (is_first will be determined by service)
+        # Parse scripts (is_first will be determined by service, or forced by --force-init)
         scripts = parse_script_configs(cfg, script_home, False)
         
         # Execute sync
@@ -108,6 +112,7 @@ def sync_run(
             scripts=scripts,
             global_env=global_env,
             add_authorized_key_flag=params.get("add_authorized_key", False),
+            force_init=force_init,
         )
         
         # Save SSH config if requested

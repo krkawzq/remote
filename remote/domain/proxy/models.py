@@ -9,22 +9,29 @@ import time
 @dataclass
 class ProxyConfig:
     """Proxy configuration"""
-    local_port: int
     remote_port: int
-    mode: str = "http"  # http or socks5
-    local_host: str = "localhost"
+    local_port: Optional[int] = None  # None means use built-in proxy server
+    mode: str = "socks5"  # http or socks5
+    local_host: str = "127.0.0.1"
+    use_builtin: bool = False  # Use built-in proxy server instead of connecting to local proxy
     tags: Dict[str, str] = field(default_factory=dict)
     
     def validate(self) -> None:
         """Validate configuration"""
         from ...core.exceptions import ProxyError
         
-        if not (1 <= self.local_port <= 65535):
+        if self.local_port is not None and not (1 <= self.local_port <= 65535):
             raise ProxyError(f"Invalid local_port: {self.local_port}")
         if not (1 <= self.remote_port <= 65535):
             raise ProxyError(f"Invalid remote_port: {self.remote_port}")
         if self.mode not in ("http", "socks5"):
             raise ProxyError(f"Invalid mode: {self.mode}, must be 'http' or 'socks5'")
+        
+        # If use_builtin is True, local_port should be None or will be auto-assigned
+        if self.use_builtin and self.local_port is None:
+            # Auto-assign a default port
+            from ...core.constants import DEFAULT_PROXY_LOCAL_PORT
+            self.local_port = DEFAULT_PROXY_LOCAL_PORT
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -33,6 +40,7 @@ class ProxyConfig:
             "remote_port": self.remote_port,
             "mode": self.mode,
             "local_host": self.local_host,
+            "use_builtin": self.use_builtin,
             "tags": self.tags,
         }
     
@@ -40,10 +48,11 @@ class ProxyConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "ProxyConfig":
         """Create from dictionary"""
         return cls(
-            local_port=data["local_port"],
             remote_port=data["remote_port"],
-            mode=data.get("mode", "http"),
-            local_host=data.get("local_host", "localhost"),
+            local_port=data.get("local_port"),
+            mode=data.get("mode", "socks5"),
+            local_host=data.get("local_host", "127.0.0.1"),
+            use_builtin=data.get("use_builtin", False),
             tags=data.get("tags", {}),
         )
 

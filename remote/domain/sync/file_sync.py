@@ -91,13 +91,13 @@ def get_file(client: RemoteClient, remote: str, local: Path) -> None:
 # File Sync Logic
 # ============================================================
 
-def sync_files(files: List[FileSync], client: RemoteClient) -> None:
+def sync_files(files: List[FileSync], client: RemoteClient, force_init: bool = False) -> None:
     """Sync multiple files"""
     for f in files:
-        _sync_one_file(f, client)
+        _sync_one_file(f, client, force_init=force_init)
 
 
-def _sync_one_file(f: FileSync, client: RemoteClient) -> None:
+def _sync_one_file(f: FileSync, client: RemoteClient, force_init: bool = False) -> None:
     """Sync a single file"""
     src_is_remote = is_remote_path(f.src)
     dist_is_remote = is_remote_path(f.dist)
@@ -117,13 +117,13 @@ def _sync_one_file(f: FileSync, client: RemoteClient) -> None:
     #  INIT MODE
     # ============================================================
     if f.mode == "init":
-        # only push if target does NOT exist
+        # only push if target does NOT exist (unless force_init)
         if dist_is_remote:
-            if remote_exists(client, dist):
+            if not force_init and remote_exists(client, dist):
                 return
             put_file(client, src, dist)
         else:
-            if Path(dist).exists():
+            if not force_init and Path(dist).exists():
                 return
             get_file(client, src, dist)
         return

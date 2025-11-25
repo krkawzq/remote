@@ -4,6 +4,7 @@ Proxy domain service - business logic
 import os
 import signal
 import time
+import socket
 from typing import Optional, Dict, Any, Callable
 from pathlib import Path
 
@@ -12,7 +13,7 @@ from ...core.exceptions import ProxyError, ConnectionError
 from ...core.logging import get_logger
 from ...core.telemetry import get_telemetry
 from .models import ProxyConfig, ProxyState, TunnelConfig
-from .tunnel import ProxyTunnel
+from .tunnel import ProxyTunnel, ProxyServer
 
 logger = get_logger(__name__)
 telemetry = get_telemetry()
@@ -44,6 +45,7 @@ class ProxyService:
         self.state_store = state_store
         self.connection_factory = connection_factory
         self._tunnel: Optional[ProxyTunnel] = None
+        self._proxy_server = None
         self._client = None
     
     def is_running(self) -> bool:
@@ -225,18 +227,49 @@ class ProxyService:
             # Create SSH client
             self._client = self.connection_factory.create(connection_params)
             
-            # Create tunnel configuration
-            tunnel_config = TunnelConfig(
-                remote_port=config.remote_port,
-                local_host=config.local_host,
-                local_port=config.local_port,
-            )
-            
-            # Create and start tunnel
-            self._tunnel = ProxyTunnel(self._client, tunnel_config)
-            self._tunnel.start()
-            
-            logger.info(f"Proxy tunnel started: {ssh_host}")
+            if config.use_builtin:
+                # Built-in proxy server mode
+                # Start built-in proxy server on local machine
+                self._proxy_server = ProxyServer(
+                    local_host=config.local_host,
+                    local_port=config.local_port,
+                    mode=config.mode,
+                    tunnel_handler=None,  # Direct connection, no tunnel handler needed
+                )
+                self._proxy_server.start()
+                
+                # Create reverse tunnel to forward remote requests to local proxy server
+                tunnel_config = TunnelConfig(
+                    remote_port=config.remote_port,
+                    local_host=config.local_host,
+                    local_port=config.local_port,
+                )
+                
+                # Create and start reverse tunnel
+                self._tunnel = ProxyTunnel(self._client, tunnel_config)
+                self._tunnel.start()
+                
+                logger.info(
+                    f"Built-in {config.mode.upper()} proxy server started: "
+                    f"Local: {config.local_host}:{config.local_port} <- Remote: {ssh_host}:{config.remote_port}"
+                )
+                logger.info(
+                    f"Remote server can use proxy at: localhost:{config.remote_port}"
+                )
+            else:
+                # Reverse tunnel mode (original behavior)
+                # Create tunnel configuration
+                tunnel_config = TunnelConfig(
+                    remote_port=config.remote_port,
+                    local_host=config.local_host,
+                    local_port=config.local_port,
+                )
+                
+                # Create and start tunnel
+                self._tunnel = ProxyTunnel(self._client, tunnel_config)
+                self._tunnel.start()
+                
+                logger.info(f"Proxy tunnel started: {ssh_host}")
             
             # Keep alive loop
             while True:
@@ -244,10 +277,18 @@ class ProxyService:
                 if not self.state_store.exists(self.name):
                     break
                 
-                # Check if tunnel is still running
-                if not self._tunnel.is_running():
-                    logger.warning("Tunnel connection lost")
-                    break
+                # Check if connection is still alive
+                if config.use_builtin:
+                    if not self._tunnel.is_running():
+                        logger.warning("Tunnel connection lost")
+                        break
+                    if not self._proxy_server.is_running():
+                        logger.warning("Proxy server stopped")
+                        break
+                else:
+                    if not self._tunnel.is_running():
+                        logger.warning("Tunnel connection lost")
+                        break
                 
                 time.sleep(1)
         
@@ -261,6 +302,8 @@ class ProxyService:
             })
             raise
         finally:
+            if self._proxy_server:
+                self._proxy_server.stop()
             if self._tunnel:
                 self._tunnel.stop()
             if self._client:
