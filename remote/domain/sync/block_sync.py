@@ -320,5 +320,5 @@ def sync_block_groups(groups: List[BlockGroup], client: RemoteClient) -> None:
         
         # Step 5: Write back to remote file
         _write_remote_file(client, remote_path, final_text)
-        logger.info(f"[block] Updated {remote_path}")
+        logger.debug(f"[block] Updated {remote_path}")
 

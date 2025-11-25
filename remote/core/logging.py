@@ -34,6 +34,17 @@ def setup_logging(
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
     
+    # Suppress paramiko internal logs (transport, sftp, etc.)
+    paramiko_loggers = [
+        'paramiko.transport',
+        'paramiko.sftp',
+        'paramiko.client',
+        'paramiko.server',
+    ]
+    for logger_name in paramiko_loggers:
+        paramiko_logger = logging.getLogger(logger_name)
+        paramiko_logger.setLevel(logging.WARNING)  # Only show warnings and errors
+    
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)

@@ -76,7 +76,7 @@ def put_file(client: RemoteClient, local: Path, remote: str) -> None:
     
     sftp = client.open_sftp()
     sftp.put(local.as_posix(), remote)
-    logger.info(f"[push] {local} → {remote}")
+    logger.debug(f"[push] {local} → {remote}")
 
 
 def get_file(client: RemoteClient, remote: str, local: Path) -> None:
@@ -84,7 +84,7 @@ def get_file(client: RemoteClient, remote: str, local: Path) -> None:
     sftp = client.open_sftp()
     local.parent.mkdir(parents=True, exist_ok=True)
     sftp.get(remote, local.as_posix())
-    logger.info(f"[pull] {remote} → {local}")
+    logger.debug(f"[pull] {remote} → {local}")
 
 
 # ============================================================

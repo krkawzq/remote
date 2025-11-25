@@ -18,9 +18,15 @@ class RichPromptProvider:
     
     def prompt(self, message: str, default: Optional[str] = None, password: bool = False) -> str:
         """Prompt user for input"""
+        # Format message with default value if provided
+        if default is not None:
+            formatted_message = f"{message} (default: {default})"
+        else:
+            formatted_message = message
+        
         if password:
-            return Prompt.ask(message, password=True, default=default, console=self.console)
-        return Prompt.ask(message, default=default, console=self.console)
+            return Prompt.ask(formatted_message, password=True, default=default, console=self.console)
+        return Prompt.ask(formatted_message, default=default, console=self.console)
     
     def confirm(self, message: str, default: bool = False) -> bool:
         """Prompt user for confirmation"""

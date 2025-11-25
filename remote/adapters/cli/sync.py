@@ -87,7 +87,7 @@ def sync_run(
                 "[cyan]ℹ[/cyan] First connection, registering local machine info..."
             ),
             on_script_skip=lambda script_path, reason: stdout_console.print(
-                f"[yellow]⊘[/yellow] Skipped: {script_path} ({reason})"
+                f"[yellow]⊘[/yellow] Skipped: {script_path}"
             ),
             on_script_exec=lambda script_path: stdout_console.print(
                 f"[cyan]▶[/cyan] Executing: {script_path}"
@@ -175,7 +175,7 @@ def _resolve_connection_params(cfg: Dict[str, Any]) -> Dict[str, Any]:
     # Prompt for password if neither password nor key is provided
     if not params.get("password") and not params.get("key"):
         password_input = prompt_provider.prompt(
-            "Enter SSH password (press Enter to skip)",
+            "Enter SSH password",
             password=True,
             default=""
         )

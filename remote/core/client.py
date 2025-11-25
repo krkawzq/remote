@@ -215,16 +215,28 @@ class RemoteClient:
         return self._sftp
 
     # --------------------
+    # Connection cleanup
+    # --------------------
+    def close(self) -> None:
+        """Close SSH and SFTP connections"""
+        if self._sftp:
+            try:
+                self._sftp.close()
+            except Exception:
+                pass
+            self._sftp = None
+        if self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+
+    # --------------------
     # Context manager
     # --------------------
     def __enter__(self) -> RemoteClient:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        if self._sftp:
-            try:
-                self._sftp.close()
-            except Exception:
-                pass
-        self.client.close()
+        self.close()
 
