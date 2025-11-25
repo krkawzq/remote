@@ -302,20 +302,40 @@ curl -o /dev/null -w "速度: %{speed_download} bytes/s\n" \
 ```
 remote/
 ├── remote/
-│   ├── cli.py              # CLI 入口
-│   ├── client.py           # SSH 客户端封装
-│   ├── config.py           # 配置解析
-│   ├── constants.py        # 常量定义
-│   ├── exceptions.py       # 异常定义
-│   ├── system.py           # 系统操作
-│   ├── utils.py            # 工具函数
-│   ├── proxy/              # 代理模块
-│   │   ├── manager.py      # 代理管理器
-│   │   └── tunnel.py       # SSH 隧道实现
-│   └── sync/               # 同步模块
-│       ├── block.py        # 配置块管理
-│       ├── file.py         # 文件同步
-│       └── script.py       # 脚本执行
+│   ├── core/               # 核心基础设施层
+│   │   ├── client.py       # SSH 客户端封装
+│   │   ├── constants.py    # 常量定义
+│   │   ├── exceptions.py   # 异常定义
+│   │   ├── interfaces.py   # 接口定义
+│   │   ├── logging.py      # 日志系统
+│   │   ├── telemetry.py    # 可观测性
+│   │   ├── utils.py        # 工具函数
+│   │   └── system/         # 系统操作
+│   │       └── machine.py  # 机器状态管理
+│   ├── domain/             # 业务逻辑层
+│   │   ├── proxy/          # 代理域
+│   │   │   ├── models.py   # 代理模型
+│   │   │   ├── service.py  # 代理服务
+│   │   │   └── tunnel.py   # SSH 隧道实现
+│   │   └── sync/           # 同步域
+│   │       ├── models.py   # 同步模型
+│   │       ├── service.py  # 同步服务
+│   │       ├── file_sync.py # 文件同步
+│   │       ├── block_sync.py # 配置块管理
+│   │       └── script_exec.py # 脚本执行
+│   ├── adapters/           # 适配器层
+│   │   ├── cli/            # CLI 适配器
+│   │   │   ├── app.py      # CLI 入口
+│   │   │   ├── proxy.py    # 代理命令
+│   │   │   ├── sync.py     # 同步命令
+│   │   │   ├── connection.py # 连接工厂
+│   │   │   └── prompts.py  # 用户提示
+│   │   └── config/         # 配置适配器
+│   │       ├── loader.py   # 配置加载器
+│   │       └── sync_parser.py # 同步配置解析
+│   └── infrastructure/     # 基础设施实现
+│       └── state/          # 状态存储
+│           └── file_store.py # 文件状态存储
 ├── pyproject.toml          # 项目配置
 └── README.md               # 本文档
 ```
@@ -325,7 +345,31 @@ remote/
 - **Python 3.10+**: 现代 Python 特性
 - **Paramiko**: SSH 协议实现
 - **Typer**: CLI 框架
+- **Rich**: 美观的终端输出和日志
 - **Cryptography**: 加密支持
+
+## 🎨 新特性
+
+### 增强的日志系统
+- 使用 Rich 提供结构化、彩色日志输出
+- 日志输出到 stderr，业务输出到 stdout
+- 支持日志级别和文件输出
+
+### 丰富的配置选项
+- 支持环境变量、CLI 参数、TOML 配置文件
+- 配置优先级：CLI > 环境变量 > TOML > 默认值
+- 配置文件合并支持
+
+### 友好的用户体验
+- Rich 渲染的提示信息
+- 清晰的错误上下文
+- 表格化状态显示
+- 交互式确认
+
+### 可扩展架构
+- 三层架构设计（Core/Domain/Adapters）
+- 接口抽象，易于扩展
+- 业务逻辑与 IO 分离
 
 ## 📝 配置示例
 

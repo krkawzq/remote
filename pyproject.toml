@@ -12,10 +12,11 @@ dependencies = [
     "cryptography>=46.0.3",
     "paramiko>=4.0.0",
     "typer>=0.20.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]
-remote = "remote.cli:run"
+remote = "remote.adapters.cli.app:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["remote"]

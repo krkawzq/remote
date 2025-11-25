@@ -1,0 +1,4 @@
+"""
+Adapters layer - external interfaces
+"""
+

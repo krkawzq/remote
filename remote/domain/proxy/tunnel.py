@@ -1,42 +1,16 @@
 """
 SSH reverse tunnel implementation using paramiko
-
-Design Notes:
-=============
-Implements reverse port forwarding (Remote Port Forwarding) using paramiko:
-- Remote server accesses localhost:remote_port
-- Traffic is forwarded through SSH tunnel to local localhost:local_port
-
-Paramiko Implementation:
-- Use Transport.request_port_forward() to establish listener on remote
-- Use Transport.accept() to receive connections from remote
-- Create threads for each connection to handle bidirectional data forwarding
-
-Advantages:
-- Pure Python implementation, cross-platform compatible
-- Supports password and key authentication
-- Better error handling and state management
-- No dependency on system SSH commands
 """
 import socket
 import threading
 import select
-import time
 from typing import Optional
-from dataclasses import dataclass
 
 import paramiko
 
-from ..client import RemoteClient
-from ..exceptions import ConnectionError
-
-
-@dataclass
-class TunnelConfig:
-    """Tunnel configuration"""
-    remote_port: int
-    local_host: str = "localhost"
-    local_port: int = 7890
+from ...core.client import RemoteClient
+from ...core.exceptions import ConnectionError
+from .models import TunnelConfig
 
 
 class ProxyTunnel:
@@ -149,6 +123,9 @@ class ProxyTunnel:
         Continuously accepts incoming connections from remote
         and spawns handler threads for each connection.
         """
+        from ...core.logging import get_logger
+        logger = get_logger(__name__)
+        
         try:
             while self._running:
                 if not self._transport or not self._transport.is_alive():
@@ -176,7 +153,7 @@ class ProxyTunnel:
         
         except Exception as e:
             if self._running:  # Only log if not intentionally stopped
-                print(f"[proxy] Acceptor error: {e}")
+                logger.error(f"Acceptor error: {e}", exc_info=True)
     
     def _handle_connection(self, chan: paramiko.Channel) -> None:
         """
@@ -198,7 +175,7 @@ class ProxyTunnel:
             # Forward data bidirectionally
             self._forward_data(chan, local_sock)
         
-        except Exception as e:
+        except Exception:
             # Connection errors are expected when connections close
             pass
         finally:
@@ -269,3 +246,4 @@ class ProxyTunnel:
         
         except Exception:
             pass
+

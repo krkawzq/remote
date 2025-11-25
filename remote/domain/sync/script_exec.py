@@ -1,55 +1,20 @@
+"""
+Script execution implementation
+"""
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Optional, Tuple
 
-from ..client import RemoteClient
-from ..utils import is_remote_path, resolve_remote_path, log_info
+from ...core.client import RemoteClient
+from ...core.utils import is_remote_path, resolve_remote_path
+from ...core.logging import get_logger
+from ...core.exceptions import ScriptExecutionError
+from .models import ScriptExec, GlobalEnv
 
+logger = get_logger(__name__)
 
-# ============================================================
-# Constants
-# ============================================================
-
-INTERACTIVE_TIMEOUT = 60  # Interactive command timeout (seconds)
-
-
-# ============================================================
-# Data Models
-# ============================================================
-
-@dataclass
-class GlobalEnv:
-    """Global interpreter environment configuration"""
-    interpreter: str = "/bin/bash"
-    flags: Optional[list[str]] = None
-
-
-@dataclass
-class ScriptExec:
-    """
-    Single script execution unit
-    
-    Attributes:
-        src: Local script path or remote script path (":path" format)
-        mode: Execution timing - "init" (first connection only) or "always" (every time)
-        exec_mode: Execution method - "exec" (direct execution) or "source" (source mode)
-        interpreter: Interpreter path (optional, ignored in source mode)
-        flags: Interpreter flags (optional)
-        args: Script arguments (optional)
-        interactive: Whether interactive mode is required
-        allow_fail: Whether non-zero exit codes are allowed
-    """
-    src: str
-    mode: Literal["init", "always"] = "always"
-    exec_mode: Literal["exec", "source"] = "exec"
-    
-    interpreter: Optional[str] = None
-    flags: Optional[list[str]] = None
-    args: Optional[list[str]] = None
-    
-    interactive: bool = False
-    allow_fail: bool = False
+# Interactive command timeout (seconds)
+INTERACTIVE_TIMEOUT = 60
 
 
 # ============================================================
@@ -128,13 +93,13 @@ def exec_non_interactive(
         (stdout, stderr, exit_code)
     
     Raises:
-        RuntimeError: If command fails and allow_fail=False
+        ScriptExecutionError: If command fails and allow_fail=False
     """
     out, err, code = client.exec_with_code_streaming(cmd)
     
     if code != 0 and not allow_fail:
-        raise RuntimeError(
-            f"[script failed]\ncmd: {cmd}\ncode: {code}\nstderr:\n{err}"
+        raise ScriptExecutionError(
+            f"Script execution failed:\ncmd: {cmd}\ncode: {code}\nstderr:\n{err}"
         )
     
     return out, err, code
@@ -326,7 +291,7 @@ def run_script(
         # Step 3: Build command
         args = script.args or []
         cmd = build_command(script, interpreter, flags, ctx.remote_path, args)
-        log_info(f"[run] {cmd}")
+        logger.info(f"[run] {cmd}")
         
         # Step 4: Execute command
         if script.interactive:
@@ -340,3 +305,4 @@ def run_script(
         # Step 5: Clean up temporary files
         if ctx.need_cleanup:
             delete_remote_file(client, ctx.remote_path)
+

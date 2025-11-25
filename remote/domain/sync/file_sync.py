@@ -1,21 +1,16 @@
+"""
+File sync implementation
+"""
+import os
 from pathlib import Path
-from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Optional, List
 
-from ..client import RemoteClient
-from ..utils import (
-    is_remote_path,
-    resolve_local_path,
-    resolve_remote_path,
-    log_info,
-)
+from ...core.client import RemoteClient
+from ...core.utils import is_remote_path, resolve_local_path, resolve_remote_path
+from ...core.logging import get_logger
+from .models import FileSync
 
-
-@dataclass
-class FileSync:
-    src: str
-    dist: str
-    mode: Literal["cover", "sync", "update", "init"]
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -41,10 +36,6 @@ def remote_mtime(client: RemoteClient, path: str) -> Optional[float]:
         return None
 
 
-# ============================================================
-# Copy helpers
-# ============================================================
-
 def ensure_remote_dir(client: RemoteClient, remote_path: str) -> None:
     """
     Ensure remote directory exists, create if it doesn't (similar to mkdir -p).
@@ -53,7 +44,6 @@ def ensure_remote_dir(client: RemoteClient, remote_path: str) -> None:
         client: RemoteClient instance
         remote_path: Remote file path
     """
-    import os
     sftp = client.open_sftp()
     
     # Get parent directory
@@ -86,7 +76,7 @@ def put_file(client: RemoteClient, local: Path, remote: str) -> None:
     
     sftp = client.open_sftp()
     sftp.put(local.as_posix(), remote)
-    log_info(f"[push] {local} → {remote}")
+    logger.info(f"[push] {local} → {remote}")
 
 
 def get_file(client: RemoteClient, remote: str, local: Path) -> None:
@@ -94,14 +84,14 @@ def get_file(client: RemoteClient, remote: str, local: Path) -> None:
     sftp = client.open_sftp()
     local.parent.mkdir(parents=True, exist_ok=True)
     sftp.get(remote, local.as_posix())
-    log_info(f"[pull] {remote} → {local}")
+    logger.info(f"[pull] {remote} → {local}")
 
 
 # ============================================================
 # File Sync Logic
 # ============================================================
 
-def sync_files(files: list[FileSync], client: RemoteClient) -> None:
+def sync_files(files: List[FileSync], client: RemoteClient) -> None:
     """Sync multiple files"""
     for f in files:
         _sync_one_file(f, client)
@@ -152,9 +142,6 @@ def _sync_one_file(f: FileSync, client: RemoteClient) -> None:
     #  SYNC MODE (bidirectional)
     # ============================================================
     if f.mode == "sync":
-        local_mtime = Path(src).stat().st_mtime if not src_is_remote else None
-        remote_mtime_val = remote_mtime(client, src) if src_is_remote else None
-
         if not src_is_remote and dist_is_remote:
             # src = local, dist = remote
             lm = Path(src).stat().st_mtime
@@ -202,3 +189,4 @@ def _sync_one_file(f: FileSync, client: RemoteClient) -> None:
 
     # fallback—should never get here
     raise RuntimeError(f"Unknown mode: {f.mode}")
+

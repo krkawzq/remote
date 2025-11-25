@@ -1,0 +1,14 @@
+# Proxy 配置示例
+# 使用方式: remote proxy start my-server --config proxy-config.toml
+
+[proxy]
+local_port = 7890
+remote_port = 1081
+mode = "http"
+local_host = "localhost"
+
+# 可选：添加标签
+# [proxy.tags]
+# environment = "production"
+# region = "us-east"
+

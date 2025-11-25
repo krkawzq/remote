@@ -42,3 +42,10 @@ DEFAULT_PROXY_LOCAL_HOST = "localhost"
 SSH_CONFIG_PATH = "~/.ssh/config"
 SSH_CONFIG_MODE = 0o600
 
+# ============================================================
+# State Storage
+# ============================================================
+
+DEFAULT_STATE_DIR = "~/.remote/proxy"
+DEFAULT_LOG_DIR = "~/.remote/logs"
+

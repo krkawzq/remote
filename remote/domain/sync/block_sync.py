@@ -1,14 +1,19 @@
+"""
+Block sync implementation
+"""
 import re
 import time
 import hashlib
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal, Tuple, List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
-from ..client import RemoteClient
-from ..utils import resolve_remote_path, log_info, log_warn
-from ..constants import GLOBAL_START_MARKER, GLOBAL_END_MARKER
+from ...core.client import RemoteClient
+from ...core.utils import resolve_remote_path
+from ...core.logging import get_logger
+from ...core.constants import GLOBAL_START_MARKER, GLOBAL_END_MARKER
+from .models import BlockGroup, TextBlock
+from .file_sync import ensure_remote_dir
 
+logger = get_logger(__name__)
 
 # Regular expression pattern for block markers
 BLOCK_PATTERN = re.compile(
@@ -19,42 +24,6 @@ BLOCK_PATTERN = re.compile(
     r"\n(?P<body>.*?)"
     r"^# <<< remote-block:(?P=name) <<<\s*$"
 )
-
-
-# ============================================================
-# Data Models
-# ============================================================
-
-@dataclass
-class TextBlock:
-    """
-    Single block, corresponding to multiple src files (modules).
-    Each block has its own update mode:
-    - init: Write only on first initialization
-    - update: Intelligently update based on mtime and hash
-    - cover: Force overwrite
-    """
-    src: list[str]
-    mode: Literal["init", "update", "cover"]
-    
-    def get_name(self) -> str:
-        """Generate block identifier from src file path (using absolute path of first file)"""
-        if not self.src:
-            raise ValueError("TextBlock must have at least one src file")
-        return str(Path(self.src[0]).expanduser().resolve())
-
-
-@dataclass
-class BlockGroup:
-    """
-    A dist file contains multiple blocks, belonging to the same group.
-    mode:
-    - incremental: Preserve unknown blocks (blocks not in configuration)
-    - overwrite: Completely rebuild remote region (delete unknown blocks)
-    """
-    dist: str
-    mode: Literal["incremental", "overwrite"]
-    blocks: list[TextBlock]
 
 
 # ============================================================
@@ -73,6 +42,8 @@ def _read_local_block(blk: TextBlock) -> Tuple[str, float]:
     Returns:
         (merged_content, latest_mtime)
     """
+    from pathlib import Path
+    
     bodies = []
     latest_mtime = 0.0
 
@@ -301,58 +272,12 @@ def _build_global_region(
 def _write_remote_file(client: RemoteClient, remote_path: str, content: str):
     """Write content to remote file"""
     # Ensure remote directory exists
-    from .file import ensure_remote_dir
     ensure_remote_dir(client, remote_path)
     
     sftp = client.open_sftp()
     with sftp.open(remote_path, "w") as f:
         f.write(content)
 
-
-def _sync_one_group(group: BlockGroup, client: RemoteClient) -> None:
-    """
-    Sync a BlockGroup to remote file.
-    
-    Process:
-    1. Read remote file
-    2. Parse existing blocks
-    3. Process all blocks, determine which need to be updated
-    4. Build new global region
-    5. Write back to remote file
-    """
-    remote_path = resolve_remote_path(client, group.dist)
-    
-    # Step 1: Read remote file
-    remote_text = _read_remote_file(client, remote_path)
-    has_global = _has_global_wrapper(remote_text)
-    
-    # Step 2: Parse existing blocks
-    existing_blocks = _parse_remote_blocks(remote_text)
-    
-    # Step 3: Process blocks
-    result = _process_blocks(group, existing_blocks, has_global)
-    
-    # If there are warnings, raise exception
-    if result.has_warnings():
-        for warning in result.warnings:
-            log_warn(warning)
-        raise RuntimeError("[ERROR] sync aborted due to remote modifications.")
-    
-    # Step 4: Build new content
-    untouched = _strip_global_region(remote_text)
-    global_lines = _build_global_region(
-        group, existing_blocks, result.blocks_to_write, has_global
-    )
-    final_text = untouched + "\n".join(global_lines) + "\n"
-    
-    # Step 5: Write back to remote file
-    _write_remote_file(client, remote_path, final_text)
-    log_info(f"[block] Updated {remote_path}")
-
-
-# ============================================================
-# Public API
-# ============================================================
 
 def sync_block_groups(groups: List[BlockGroup], client: RemoteClient) -> None:
     """
@@ -361,6 +286,39 @@ def sync_block_groups(groups: List[BlockGroup], client: RemoteClient) -> None:
     Args:
         groups: List of BlockGroup
         client: RemoteClient instance
+    
+    Raises:
+        RuntimeError: If sync fails due to remote modifications
     """
+    from ...core.exceptions import BlockSyncError
+    
     for group in groups:
-        _sync_one_group(group, client)
+        remote_path = resolve_remote_path(client, group.dist)
+        
+        # Step 1: Read remote file
+        remote_text = _read_remote_file(client, remote_path)
+        has_global = _has_global_wrapper(remote_text)
+        
+        # Step 2: Parse existing blocks
+        existing_blocks = _parse_remote_blocks(remote_text)
+        
+        # Step 3: Process blocks
+        result = _process_blocks(group, existing_blocks, has_global)
+        
+        # If there are warnings, raise exception
+        if result.has_warnings():
+            for warning in result.warnings:
+                logger.warning(warning)
+            raise BlockSyncError("Sync aborted due to remote modifications.")
+        
+        # Step 4: Build new content
+        untouched = _strip_global_region(remote_text)
+        global_lines = _build_global_region(
+            group, existing_blocks, result.blocks_to_write, has_global
+        )
+        final_text = untouched + "\n".join(global_lines) + "\n"
+        
+        # Step 5: Write back to remote file
+        _write_remote_file(client, remote_path, final_text)
+        logger.info(f"[block] Updated {remote_path}")
+

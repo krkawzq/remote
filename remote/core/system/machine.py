@@ -1,3 +1,6 @@
+"""
+Machine state management
+"""
 import json
 import time
 import uuid
@@ -6,14 +9,10 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any
 
-from .client import RemoteClient
-from .utils import resolve_remote_path
-from .constants import REMOTE_STATE_PATH, LOCAL_MACHINE_ID_PATH
+from ..client import RemoteClient
+from ..utils import resolve_remote_path
+from ..constants import REMOTE_STATE_PATH, LOCAL_MACHINE_ID_PATH
 
-
-# ============================================================
-# Local Machine ID
-# ============================================================
 
 def _read_local_machine_id() -> str:
     """
@@ -21,7 +20,6 @@ def _read_local_machine_id() -> str:
     - 优先读取系统 machine-id
     - 如果失败，则使用 ~/.remote/machine-id 持久化生成
     """
-
     # 1. Linux/macOS
     if Path("/etc/machine-id").exists():
         return Path("/etc/machine-id").read_text().strip()
@@ -56,11 +54,6 @@ def get_local_machine_id() -> str:
     return _read_local_machine_id()
 
 
-# ============================================================
-# Remote State Management
-# ============================================================
-
-
 def load_remote_state(client: RemoteClient) -> Dict[str, Any]:
     """从远程读取状态文件，不存在则返回空结构"""
     remote_path = resolve_remote_path(client, REMOTE_STATE_PATH)
@@ -84,10 +77,6 @@ def save_remote_state(client: RemoteClient, state: Dict[str, Any]) -> None:
         f.write(payload)
 
 
-# ============================================================
-# High-Level APIs
-# ============================================================
-
 def ensure_remote_state(client: RemoteClient) -> Dict[str, Any]:
     """
     读取远程状态，
@@ -109,7 +98,6 @@ def register_machine(
     - True → 当前机器是第一次连接
     - False → 之前连接过
     """
-
     mid = get_local_machine_id()
     state = ensure_remote_state(client)
 
@@ -150,3 +138,4 @@ def update_last_sync(client: RemoteClient) -> None:
 
     state["machines"][mid]["last_sync"] = int(time.time())
     save_remote_state(client, state)
+
