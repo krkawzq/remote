@@ -55,8 +55,8 @@ def setup_logging(
     # Create Rich handler for stderr
     rich_handler = RichHandler(
         console=_stderr_console,
-        show_time=True,
-        show_path=True,
+        show_time=False,  # Don't show timestamp
+        show_path=False,  # Don't show file path and line number
         rich_tracebacks=rich_tracebacks,
         markup=True,
         show_level=True,

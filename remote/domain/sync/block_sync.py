@@ -147,14 +147,36 @@ def _should_update_block(
     Returns:
         (should_update, warning_message)
     """
-    # init mode: write only on first initialization (unless force_init)
+    # init mode: write only on first initialization
+    # BUT if force_init, treat init blocks as update mode (to avoid conflicts)
     if blk.mode == "init":
         if force_init:
-            # Force init mode: always update
+            # Force init: treat init blocks as update mode to avoid overwriting modified content
+            # Use same logic as update mode
+            if existed:
+                # mtime not newer → no update needed
+                if new_mtime <= old_mtime:
+                    return False, None
+                
+                # hash conflict → reject update
+                if new_hash != old_hash:
+                    warning = f"""
+[WARN] Block '{block_name}' was manually modified on the remote. Update is rejected!
+Local hash:  {new_hash}
+Remote hash: {old_hash}
+Local mtime:  {time.ctime(new_mtime)}
+Remote mtime: {time.ctime(old_mtime)}
+
+If you want to overwrite, please set block.mode to 'cover' and try again.
+"""
+                    return False, warning
+            # Need to add or update
             return True, None
-        if has_global:
-            return False, None
-        return True, None
+        else:
+            # Normal init mode: only write if not exists
+            if has_global:
+                return False, None
+            return True, None
     
     # update mode: intelligent update
     if blk.mode == "update":
